@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}Reports - Spymaster{% endblock %}
+
+{% block content %}
+<div x-data="reportsPage()" x-init="init()">
+    <h1 class="text-3xl font-bold mb-6">Reports</h1>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Report List -->
+        <div class="lg:col-span-1 bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <h2 class="text-lg font-bold mb-4">All Reports</h2>
+            <div class="space-y-2">
+                <template x-for="report in reports" :key="report.name">
+                    <button @click="selectReport(report)"
+                            :class="{'bg-blue-600': selected?.name === report.name, 'bg-gray-700/50 hover:bg-gray-700': selected?.name !== report.name}"
+                            class="w-full text-left p-3 rounded-lg transition-colors">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center">
+                                <span class="px-2 py-1 text-xs font-medium rounded mr-2"
+                                      :class="report.type === 'html' ? 'bg-purple-500/20 text-purple-400' : 'bg-gray-500/20 text-gray-400'"
+                                      x-text="report.type"></span>
+                                <span class="font-medium truncate" x-text="report.name"></span>
+                            </div>
+                        </div>
+                        <div class="text-sm text-gray-400 mt-1 flex justify-between">
+                            <span x-text="new Date(report.modified).toLocaleDateString()"></span>
+                            <span x-text="formatBytes(report.size)"></span>
+                        </div>
+                    </button>
+                </template>
+
+                <template x-if="reports.length === 0">
+                    <div class="text-center text-gray-400 py-8">
+                        <p>No reports found</p>
+                    </div>
+                </template>
+            </div>
+        </div>
+
+        <!-- Report Preview -->
+        <div class="lg:col-span-2 bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+            <template x-if="!selected">
+                <div class="text-center text-gray-400 py-12">
+                    <p>Select a report to preview</p>
+                </div>
+            </template>
+
+            <template x-if="selected">
+                <div class="h-full flex flex-col">
+                    <div class="flex items-center justify-between p-4 border-b border-gray-700">
+                        <h2 class="font-bold" x-text="selected.name"></h2>
+                        <a :href="'/api/report/' + selected.name" target="_blank"
+                           class="px-4 py-2 bg-blue-600 rounded hover:bg-blue-500 text-sm flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                            </svg>
+                            Open in New Tab
+                        </a>
+                    </div>
+                    <div class="flex-1 min-h-[600px]">
+                        <iframe :src="'/api/report/' + selected.name"
+                                class="w-full h-full border-0"
+                                style="min-height: 600px;"></iframe>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function reportsPage() {
+    return {
+        reports: [],
+        selected: null,
+
+        async init() {
+            const res = await fetch('/api/reports');
+            this.reports = await res.json();
+            if (this.reports.length > 0) {
+                this.selected = this.reports[0];
+            }
+        },
+
+        selectReport(report) {
+            this.selected = report;
+        },
+
+        formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+    }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,596 @@
+{% extends "base.html" %}
+
+{% block title %}Checkpoints - Spymaster{% endblock %}
+
+{% block content %}
+<div x-data="checkpointsPage()" x-init="init()">
+    <h1 class="text-3xl font-bold mb-6">Checkpoints</h1>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Checkpoint List -->
+        <div class="lg:col-span-1 bg-neutral-900 rounded-lg p-4 border border-neutral-800 max-h-[80vh] overflow-y-auto">
+            <h2 class="text-lg font-bold mb-4">All Checkpoints</h2>
+            <div class="space-y-2">
+                <template x-for="cp in checkpoints" :key="cp.name">
+                    <button @click="selectCheckpoint(cp)"
+                            :class="{'bg-neutral-700': selected?.name === cp.name, 'bg-neutral-800/50 hover:bg-neutral-800': selected?.name !== cp.name}"
+                            class="w-full text-left p-3 rounded-lg transition-colors">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="font-medium" x-text="cp.name"></p>
+                                <p class="text-sm text-gray-400" x-text="cp.config?.model_type || 'Unknown'"></p>
+                            </div>
+                            <span class="text-xs px-2 py-1 rounded"
+                                  :class="cp.config?.completed ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'"
+                                  x-text="cp.config?.completed ? 'Complete' : 'In Progress'"></span>
+                        </div>
+                    </button>
+                </template>
+            </div>
+        </div>
+
+        <!-- Checkpoint Details -->
+        <div class="lg:col-span-2 bg-neutral-900 rounded-lg p-6 border border-neutral-800 max-h-[80vh] overflow-y-auto">
+            <template x-if="!selected">
+                <div class="text-center text-gray-400 py-12">
+                    <p>Select a checkpoint to view details</p>
+                </div>
+            </template>
+
+            <template x-if="selected">
+                <div>
+                    <h2 class="text-2xl font-bold mb-4" x-text="selected.name"></h2>
+
+                    <!-- Full Configuration Section -->
+                    <template x-if="selected.config">
+                        <div class="mb-6 bg-neutral-950 rounded-lg p-4">
+                            <h3 class="text-lg font-bold mb-4 text-purple-400">Configuration</h3>
+
+                            <!-- Basic Info Row -->
+                            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                                <div class="bg-neutral-800/50 p-3 rounded-lg">
+                                    <p class="text-xs text-gray-400">Model Type</p>
+                                    <p class="text-sm font-medium" x-text="selected.config.model_type || 'Unknown'"></p>
+                                </div>
+                                <div class="bg-neutral-800/50 p-3 rounded-lg">
+                                    <p class="text-xs text-gray-400">Status</p>
+                                    <p class="text-sm font-medium" :class="selected.config.status === 'trained' ? 'text-green-400' : 'text-yellow-400'" x-text="selected.config.status || 'Unknown'"></p>
+                                </div>
+                                <div class="bg-neutral-800/50 p-3 rounded-lg">
+                                    <p class="text-xs text-gray-400">Created</p>
+                                    <p class="text-sm font-medium" x-text="selected.config.created ? new Date(selected.config.created).toLocaleDateString() : 'Unknown'"></p>
+                                </div>
+                                <div class="bg-neutral-800/50 p-3 rounded-lg">
+                                    <p class="text-xs text-gray-400">ID</p>
+                                    <p class="text-xs font-mono text-gray-300 truncate" x-text="selected.config.id || '-'"></p>
+                                </div>
+                            </div>
+
+                            <!-- Hyperparameters -->
+                            <template x-if="selected.config.hyperparameters">
+                                <div class="mb-4">
+                                    <h4 class="text-sm font-bold text-gray-400 mb-2">Hyperparameters</h4>
+                                    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+                                        <template x-for="(value, key) in selected.config.hyperparameters" :key="key">
+                                            <div class="bg-neutral-800/30 p-2 rounded">
+                                                <p class="text-xs text-gray-500" x-text="key"></p>
+                                                <p class="text-sm font-mono" x-text="typeof value === 'boolean' ? (value ? 'true' : 'false') : value"></p>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </template>
+
+                            <!-- Data Range -->
+                            <template x-if="selected.config.data">
+                                <div class="mb-4">
+                                    <h4 class="text-sm font-bold text-gray-400 mb-2">Training Data</h4>
+                                    <div class="grid grid-cols-3 gap-2">
+                                        <div class="bg-neutral-800/30 p-2 rounded">
+                                            <p class="text-xs text-gray-500">Underlying</p>
+                                            <p class="text-sm font-mono" x-text="selected.config.data.underlying || 'SPY'"></p>
+                                        </div>
+                                        <div class="bg-neutral-800/30 p-2 rounded">
+                                            <p class="text-xs text-gray-500">Start Date</p>
+                                            <p class="text-sm font-mono" x-text="selected.config.data.start_date || '-'"></p>
+                                        </div>
+                                        <div class="bg-neutral-800/30 p-2 rounded">
+                                            <p class="text-xs text-gray-500">End Date</p>
+                                            <p class="text-sm font-mono" x-text="selected.config.data.end_date || '-'"></p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+
+                            <!-- Metrics -->
+                            <template x-if="selected.config.metrics && Object.keys(selected.config.metrics).length > 0">
+                                <div>
+                                    <h4 class="text-sm font-bold text-gray-400 mb-2">Metrics</h4>
+                                    <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+                                        <template x-for="(value, key) in selected.config.metrics" :key="key">
+                                            <div class="bg-green-900/20 border border-green-800/30 p-2 rounded">
+                                                <p class="text-xs text-gray-500" x-text="key"></p>
+                                                <p class="text-sm font-mono text-green-400" x-text="typeof value === 'number' ? (value === Infinity ? '∞' : value.toFixed(6)) : value"></p>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </template>
+
+                            <!-- Training Args (legacy format) -->
+                            <template x-if="selected.config.args">
+                                <div class="mt-4">
+                                    <h4 class="text-sm font-bold text-gray-400 mb-2">Training Arguments</h4>
+                                    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+                                        <template x-for="(value, key) in selected.config.args" :key="key">
+                                            <div class="bg-neutral-800/30 p-2 rounded">
+                                                <p class="text-xs text-gray-500" x-text="key"></p>
+                                                <p class="text-sm font-mono truncate" x-text="typeof value === 'object' ? JSON.stringify(value) : value"></p>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </template>
+
+                            <!-- Final Metrics (legacy format) -->
+                            <template x-if="selected.config.final_metrics">
+                                <div class="mt-4">
+                                    <h4 class="text-sm font-bold text-gray-400 mb-2">Final Metrics</h4>
+                                    <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+                                        <template x-for="(value, key) in selected.config.final_metrics" :key="key">
+                                            <div class="bg-green-900/20 border border-green-800/30 p-2 rounded">
+                                                <p class="text-xs text-gray-500" x-text="key"></p>
+                                                <p class="text-sm font-mono text-green-400" x-text="typeof value === 'number' ? value.toFixed(6) : value"></p>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+
+                    <!-- No Config Warning -->
+                    <template x-if="!selected.config">
+                        <div class="mb-6 bg-yellow-900/20 border border-yellow-700/50 rounded-lg p-4">
+                            <p class="text-yellow-400 text-sm">No config.json found for this checkpoint</p>
+                        </div>
+                    </template>
+
+                    <!-- Connected Strategies (only show if there are any) -->
+                    <template x-if="relatedStrategies.length > 0">
+                        <div class="mb-6">
+                            <h3 class="text-lg font-bold mb-3">Connected Strategies</h3>
+                            <div class="space-y-2">
+                                <template x-for="strat in relatedStrategies" :key="strat.name">
+                                    <a :href="'/strategies?select=' + strat.name"
+                                       class="flex items-center justify-between p-3 bg-neutral-800/50 rounded-lg hover:bg-neutral-800 transition-colors">
+                                        <div class="flex items-center">
+                                            <svg class="w-5 h-5 text-primary-400 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                                            </svg>
+                                            <div>
+                                                <span class="font-medium" x-text="strat.name"></span>
+                                                <span class="text-xs text-gray-400 ml-2" x-text="'(' + strat.checkpoint_role + ')'"></span>
+                                            </div>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <span class="text-xs px-2 py-1 rounded"
+                                                  :class="{'bg-green-500/20 text-green-400': strat.exit_mode === 'continuous_signal',
+                                                           'bg-yellow-500/20 text-yellow-400': strat.exit_mode === 'rule_based',
+                                                           'bg-purple-500/20 text-purple-400': strat.exit_mode === 'neural_network'}"
+                                                  x-text="strat.exit_mode || 'unknown'"></span>
+                                            <span class="text-sm text-gray-400" x-text="strat.num_backtests + ' backtests'"></span>
+                                        </div>
+                                    </a>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Training Log -->
+                    <template x-if="logContent !== null">
+                        <div class="mb-6">
+                            <div class="flex items-center justify-between mb-3">
+                                <h3 class="text-lg font-bold">Training Log</h3>
+                                <button @click="logExpanded = !logExpanded"
+                                        class="text-sm text-primary-400 hover:text-blue-300">
+                                    <span x-text="logExpanded ? 'Collapse' : 'Expand'"></span>
+                                </button>
+                            </div>
+                            <div class="bg-neutral-950 rounded-lg p-4 font-mono text-xs overflow-auto"
+                                 :class="logExpanded ? 'max-h-[60vh]' : 'max-h-48'">
+                                <pre x-text="logContent" class="whitespace-pre-wrap"></pre>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Files -->
+                    <div class="mb-6">
+                        <h3 class="text-lg font-bold mb-3">Files</h3>
+                        <div class="space-y-2">
+                            <template x-for="file in selected.files" :key="file.name">
+                                <div @click="file.name.endsWith('.pt') && openEmbeddingViz(file)"
+                                     class="flex items-center justify-between p-3 rounded-lg"
+                                     :class="file.name.endsWith('.pt') ? 'bg-neutral-800/50 cursor-pointer hover:bg-purple-900/30 hover:border-purple-500/50 border border-transparent' : 'bg-neutral-800/50'">
+                                    <div class="flex items-center">
+                                        <svg class="w-5 h-5 mr-3" :class="file.name.endsWith('.pt') ? 'text-purple-400' : 'text-gray-400'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                        </svg>
+                                        <span x-text="file.name" :class="file.name.endsWith('.pt') ? 'text-purple-400' : ''"></span>
+                                        <span x-show="file.name.endsWith('.pt')" class="ml-2 text-xs text-gray-500">(click to visualize)</span>
+                                    </div>
+                                    <div class="text-sm text-gray-400">
+                                        <span x-text="formatBytes(file.size)"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- Embedding Visualization Modal -->
+    <template x-if="showEmbeddingViz">
+        <div class="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" @click.self="showEmbeddingViz = false">
+            <div class="bg-neutral-900 rounded-xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col">
+                <!-- Modal Header -->
+                <div class="flex items-center justify-between p-4 border-b border-neutral-800">
+                    <h2 class="text-xl font-bold">
+                        <span class="text-purple-400" x-text="selectedFile?.name"></span>
+                        <span class="text-gray-400 ml-2">Embedding Visualization</span>
+                    </h2>
+                    <button @click="showEmbeddingViz = false" class="text-gray-400 hover:text-white">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- Controls -->
+                <div class="p-4 border-b border-neutral-800 flex flex-wrap gap-4 items-center">
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-400">Reduction:</label>
+                        <select x-model="embeddingSettings.reduction" @change="loadEmbeddings()"
+                                class="bg-neutral-800 border border-neutral-700 rounded px-3 py-1 text-sm">
+                            <option value="pca">PCA</option>
+                            <option value="tsne">t-SNE</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-400">Samples:</label>
+                        <select x-model="embeddingSettings.numSamples" @change="loadEmbeddings()"
+                                class="bg-neutral-800 border border-neutral-700 rounded px-3 py-1 text-sm">
+                            <option value="500">500</option>
+                            <option value="1000">1,000</option>
+                            <option value="2000">2,000</option>
+                            <option value="5000">5,000</option>
+                        </select>
+                    </div>
+                    <template x-if="embeddingSettings.reduction === 'tsne'">
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm text-gray-400">Perplexity:</label>
+                            <select x-model="embeddingSettings.perplexity" @change="loadEmbeddings()"
+                                    class="bg-neutral-800 border border-neutral-700 rounded px-3 py-1 text-sm">
+                                <option value="5">5</option>
+                                <option value="15">15</option>
+                                <option value="30">30</option>
+                                <option value="50">50</option>
+                            </select>
+                        </div>
+                    </template>
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-400">Color by:</label>
+                        <select x-model="embeddingSettings.colorBy" @change="renderEmbeddingPlot()"
+                                class="bg-neutral-800 border border-neutral-700 rounded px-3 py-1 text-sm">
+                            <option value="direction">Direction (5m)</option>
+                            <option value="time">Time</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Content -->
+                <div class="flex-1 overflow-auto p-4">
+                    <!-- Loading State -->
+                    <template x-if="embeddingLoading">
+                        <div class="flex items-center justify-center h-96">
+                            <div class="text-center">
+                                <svg class="animate-spin h-8 w-8 text-purple-400 mx-auto mb-4" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                <p class="text-gray-400" x-text="embeddingSettings.reduction === 'tsne' ? 'Running t-SNE (this may take a moment)...' : 'Extracting embeddings...'"></p>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Error State -->
+                    <template x-if="embeddingError">
+                        <div class="bg-red-900/30 border border-red-700 rounded-lg p-4">
+                            <p class="text-red-400" x-text="embeddingError"></p>
+                        </div>
+                    </template>
+
+                    <!-- Visualization -->
+                    <template x-if="!embeddingLoading && !embeddingError && embeddingData">
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                            <!-- Scatter Plot -->
+                            <div class="lg:col-span-2 bg-neutral-950 rounded-lg p-4">
+                                <div id="embedding-plot" style="width: 100%; height: 500px;"></div>
+                            </div>
+
+                            <!-- Statistics -->
+                            <div class="space-y-4">
+                                <!-- Basic Stats -->
+                                <div class="bg-neutral-950 rounded-lg p-4">
+                                    <h4 class="text-sm font-bold text-gray-400 mb-3">Embedding Statistics</h4>
+                                    <div class="space-y-2 text-sm">
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Samples:</span>
+                                            <span x-text="embeddingData.num_samples?.toLocaleString()"></span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Embedding Dim:</span>
+                                            <span x-text="embeddingData.embedding_dim"></span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Mean Norm:</span>
+                                            <span x-text="embeddingData.stats?.mean_norm?.toFixed(4)"></span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Std Norm:</span>
+                                            <span x-text="embeddingData.stats?.std_norm?.toFixed(4)"></span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Effective Rank (Collapse Detection) -->
+                                <div class="bg-neutral-950 rounded-lg p-4">
+                                    <h4 class="text-sm font-bold text-gray-400 mb-3">Collapse Detection</h4>
+                                    <div class="space-y-2 text-sm">
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Effective Rank:</span>
+                                            <span :class="embeddingData.stats?.effective_rank > 10 ? 'text-green-400' : 'text-red-400'"
+                                                  x-text="embeddingData.stats?.effective_rank?.toFixed(1) + ' / ' + embeddingData.embedding_dim"></span>
+                                        </div>
+                                        <div class="mt-2">
+                                            <p class="text-xs text-gray-500 mb-1">Top Eigenvalues:</p>
+                                            <div class="flex flex-wrap gap-1">
+                                                <template x-for="(ev, i) in (embeddingData.stats?.top_eigenvalues || []).slice(0, 5)" :key="i">
+                                                    <span class="text-xs px-2 py-0.5 bg-neutral-800 rounded" x-text="ev.toFixed(2)"></span>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- PCA Variance -->
+                                <template x-if="embeddingData.explained_variance">
+                                    <div class="bg-neutral-950 rounded-lg p-4">
+                                        <h4 class="text-sm font-bold text-gray-400 mb-3">PCA Explained Variance</h4>
+                                        <div class="space-y-2 text-sm">
+                                            <div class="flex justify-between">
+                                                <span class="text-gray-400">PC1:</span>
+                                                <span x-text="(embeddingData.explained_variance[0] * 100).toFixed(1) + '%'"></span>
+                                            </div>
+                                            <div class="flex justify-between">
+                                                <span class="text-gray-400">PC2:</span>
+                                                <span x-text="(embeddingData.explained_variance[1] * 100).toFixed(1) + '%'"></span>
+                                            </div>
+                                            <div class="flex justify-between font-medium">
+                                                <span class="text-gray-400">Total:</span>
+                                                <span x-text="((embeddingData.explained_variance[0] + embeddingData.explained_variance[1]) * 100).toFixed(1) + '%'"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+
+                                <!-- Direction Distribution -->
+                                <div class="bg-neutral-950 rounded-lg p-4">
+                                    <h4 class="text-sm font-bold text-gray-400 mb-3">Direction Distribution</h4>
+                                    <div class="space-y-2 text-sm">
+                                        <div class="flex justify-between">
+                                            <span class="text-green-400">Up (5m):</span>
+                                            <span x-text="embeddingData.labels ? (embeddingData.labels.filter(l => l === 1).length / embeddingData.labels.length * 100).toFixed(1) + '%' : '-'"></span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span class="text-red-400">Down (5m):</span>
+                                            <span x-text="embeddingData.labels ? (embeddingData.labels.filter(l => l === 0).length / embeddingData.labels.length * 100).toFixed(1) + '%' : '-'"></span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </template>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<script>
+function checkpointsPage() {
+    return {
+        checkpoints: [],
+        selected: null,
+        relatedStrategies: [],
+        logContent: null,
+        logExpanded: false,
+        selectedFile: null,
+        // Embedding visualization state
+        showEmbeddingViz: false,
+        embeddingLoading: false,
+        embeddingError: null,
+        embeddingData: null,
+        embeddingSettings: {
+            reduction: 'pca',
+            numSamples: '1000',
+            perplexity: '30',
+            colorBy: 'direction'
+        },
+
+        async init() {
+            const res = await fetch('/api/checkpoints');
+            this.checkpoints = await res.json();
+
+            // Check for URL parameter to auto-select
+            const params = new URLSearchParams(window.location.search);
+            const selectName = params.get('select');
+
+            if (selectName) {
+                const cp = this.checkpoints.find(c => c.name === selectName);
+                if (cp) {
+                    await this.selectCheckpoint(cp);
+                    return;
+                }
+            }
+
+            if (this.checkpoints.length > 0) {
+                await this.selectCheckpoint(this.checkpoints[0]);
+            }
+        },
+
+        async selectCheckpoint(cp) {
+            this.selected = cp;
+            this.selectedFile = null;
+            this.logContent = null;
+            this.logExpanded = false;
+
+            // Fetch related strategies
+            const stratRes = await fetch(`/api/checkpoint/${cp.name}/strategies`);
+            this.relatedStrategies = await stratRes.json();
+
+            // Fetch training log
+            const logRes = await fetch(`/api/checkpoint/${cp.name}/log`);
+            const logData = await logRes.json();
+            if (logData.content) {
+                this.logContent = logData.content;
+            }
+        },
+
+        openEmbeddingViz(file) {
+            this.selectedFile = file;
+            this.showEmbeddingViz = true;
+            this.loadEmbeddings();
+        },
+
+        formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        },
+
+        async loadEmbeddings() {
+            if (!this.selectedFile || !this.selected) return;
+
+            this.embeddingLoading = true;
+            this.embeddingError = null;
+            this.embeddingData = null;
+
+            const filePath = `data/checkpoints/${this.selected.name}/${this.selectedFile.name}`;
+            const params = new URLSearchParams({
+                path: filePath,
+                num_samples: this.embeddingSettings.numSamples,
+                reduction: this.embeddingSettings.reduction,
+                perplexity: this.embeddingSettings.perplexity
+            });
+
+            try {
+                const res = await fetch(`/api/pytorch/embeddings?${params}`);
+                const data = await res.json();
+
+                if (data.error) {
+                    this.embeddingError = data.error;
+                    this.embeddingLoading = false;
+                } else {
+                    this.embeddingData = data;
+                    this.embeddingLoading = false;
+                    // Wait for DOM update then render plot
+                    await this.$nextTick();
+                    // Small delay to ensure DOM is fully rendered
+                    setTimeout(() => this.renderEmbeddingPlot(), 50);
+                }
+            } catch (e) {
+                this.embeddingError = e.message;
+                this.embeddingLoading = false;
+            }
+        },
+
+        renderEmbeddingPlot() {
+            if (!this.embeddingData) return;
+
+            const data = this.embeddingData;
+            let colors, colorscale, colorbarTitle;
+
+            if (this.embeddingSettings.colorBy === 'direction') {
+                // Color by direction: green for up, red for down
+                colors = data.labels.map(l => l === 1 ? '#22c55e' : '#ef4444');
+                colorscale = null;
+                colorbarTitle = null;
+            } else {
+                // Color by time index
+                colors = data.timestamps.map((_, i) => i);
+                colorscale = 'Viridis';
+                colorbarTitle = 'Time Index';
+            }
+
+            const trace = {
+                x: data.x,
+                y: data.y,
+                mode: 'markers',
+                type: 'scattergl',
+                marker: {
+                    size: 5,
+                    color: colors,
+                    colorscale: colorscale,
+                    colorbar: colorbarTitle ? { title: colorbarTitle } : undefined,
+                    opacity: 0.7
+                },
+                text: data.timestamps.map((ts, i) =>
+                    `Time: ${ts}<br>Direction: ${data.labels[i] === 1 ? 'Up' : 'Down'}`
+                ),
+                hoverinfo: 'text'
+            };
+
+            const layout = {
+                title: {
+                    text: `${data.reduction.toUpperCase()} Projection (${data.num_samples} samples)`,
+                    font: { color: '#e5e5e5' }
+                },
+                xaxis: {
+                    title: data.reduction === 'pca' ? 'PC1' : 'Dim 1',
+                    gridcolor: '#333',
+                    zerolinecolor: '#444',
+                    color: '#a3a3a3'
+                },
+                yaxis: {
+                    title: data.reduction === 'pca' ? 'PC2' : 'Dim 2',
+                    gridcolor: '#333',
+                    zerolinecolor: '#444',
+                    color: '#a3a3a3'
+                },
+                paper_bgcolor: '#0a0a0a',
+                plot_bgcolor: '#0a0a0a',
+                font: { color: '#e5e5e5' },
+                showlegend: false,
+                margin: { l: 50, r: 20, t: 40, b: 50 }
+            };
+
+            const config = {
+                responsive: true,
+                displayModeBar: true,
+                modeBarButtonsToRemove: ['lasso2d', 'select2d']
+            };
+
+            Plotly.newPlot('embedding-plot', [trace], layout, config);
+        }
+    }
+}
+</script>
+{% endblock %}

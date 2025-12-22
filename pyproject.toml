@@ -1,0 +1,68 @@
+[project]
+name = "spymaster"
+version = "0.1.0"
+description = "LeJEPA-powered intraday trading bot for SPY 0DTE options"
+authors = [{name = "Spymaster Team"}]
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "polygon-api-client>=1.12.0",
+    "alpaca-trade-api>=3.0.0",
+    "pydantic>=2.5.0",
+    "python-dotenv>=1.0.0",
+    "aiohttp>=3.9.0",
+    "httpx>=0.27.0",
+    "scikit-learn>=1.3.0",
+    "matplotlib>=3.7.0",
+    "tqdm>=4.66.0",
+    "pyarrow>=22.0.0",
+    "boto3>=1.42.0",
+    "flask>=3.1.2",
+    "typer>=0.20.0",
+    "rich>=14.2.0",
+    "arrow>=1.4.0",
+    "sqlalchemy>=2.0.45",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+    "ipython>=8.17.0",
+    "jupyter>=1.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

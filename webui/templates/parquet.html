@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+
+{% block title %}Parquet Viewer - Spymaster{% endblock %}
+
+{% block content %}
+<div x-data="parquetViewer()" x-init="init()">
+    <h1 class="text-3xl font-bold mb-6">Parquet Viewer</h1>
+
+    <!-- File Path Input -->
+    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
+        <div class="flex gap-4">
+            <div class="flex-1">
+                <label class="block text-sm text-gray-400 mb-2">Parquet File Path</label>
+                <input type="text" x-model="filePath"
+                       class="w-full bg-gray-700 rounded px-4 py-2"
+                       placeholder="data/polygon/stocks/SPY_2024-01-02.parquet"
+                       @keyup.enter="loadFile()">
+            </div>
+            <div class="flex items-end">
+                <button @click="loadFile()"
+                        class="px-6 py-2 bg-blue-600 rounded hover:bg-blue-500">
+                    Load
+                </button>
+            </div>
+        </div>
+
+        <!-- Quick Examples -->
+        <div class="mt-4">
+            <span class="text-sm text-gray-400">Quick examples:</span>
+            <div class="flex flex-wrap gap-2 mt-2">
+                <button @click="filePath = 'data/polygon/stocks/SPY_2024-01-02.parquet'; loadFile()"
+                        class="px-3 py-1 bg-gray-700 rounded text-sm hover:bg-gray-600">
+                    SPY Stock (Jan 2024)
+                </button>
+                <button @click="filePath = 'data/polygon/options/SPY_2024-01-02.parquet'; loadFile()"
+                        class="px-3 py-1 bg-gray-700 rounded text-sm hover:bg-gray-600">
+                    SPY Options (Jan 2024)
+                </button>
+                <button @click="filePath = 'data/polygon/oi/spy_oi_2020-2025.parquet'; loadFile()"
+                        class="px-3 py-1 bg-gray-700 rounded text-sm hover:bg-gray-600">
+                    Open Interest
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Error Message -->
+    <template x-if="error">
+        <div class="bg-red-500/20 border border-red-500 rounded-lg p-4 mb-6">
+            <p class="text-red-400" x-text="error"></p>
+        </div>
+    </template>
+
+    <!-- File Info -->
+    <template x-if="data && !error">
+        <div>
+            <!-- Stats -->
+            <div class="grid grid-cols-4 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <p class="text-sm text-gray-400">Total Rows</p>
+                    <p class="text-2xl font-bold" x-text="data.total_rows?.toLocaleString()"></p>
+                </div>
+                <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <p class="text-sm text-gray-400">Columns</p>
+                    <p class="text-2xl font-bold" x-text="data.schema?.length"></p>
+                </div>
+                <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <p class="text-sm text-gray-400">Showing</p>
+                    <p class="text-2xl font-bold" x-text="data.data?.length + ' rows'"></p>
+                </div>
+                <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <p class="text-sm text-gray-400">Offset</p>
+                    <p class="text-2xl font-bold" x-text="offset"></p>
+                </div>
+            </div>
+
+            <!-- Data Table -->
+            <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+                <div class="table-container" style="max-height: 60vh;">
+                    <table class="w-full text-sm">
+                        <thead class="sticky-header">
+                            <tr>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-400 border-b border-gray-700">#</th>
+                                <template x-for="col in data.schema" :key="col.name">
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-400 border-b border-gray-700">
+                                        <div x-text="col.name"></div>
+                                        <div class="text-gray-500 font-normal" x-text="col.dtype"></div>
+                                    </th>
+                                </template>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="(row, idx) in data.data" :key="idx">
+                                <tr class="border-t border-gray-700 hover:bg-gray-700/50">
+                                    <td class="px-3 py-2 text-gray-500" x-text="offset + idx + 1"></td>
+                                    <template x-for="col in data.schema" :key="col.name">
+                                        <td class="px-3 py-2 font-mono text-xs max-w-xs truncate"
+                                            :title="String(row[col.name])"
+                                            x-text="formatValue(row[col.name], col.dtype)"></td>
+                                    </template>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Pagination -->
+                <div class="flex items-center justify-between p-4 border-t border-gray-700">
+                    <button @click="prevPage()" :disabled="offset === 0"
+                            class="px-4 py-2 bg-gray-700 rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-600">
+                        Previous
+                    </button>
+                    <div class="flex items-center gap-4">
+                        <span class="text-sm text-gray-400">
+                            Rows <span x-text="offset + 1"></span> - <span x-text="Math.min(offset + limit, data.total_rows)"></span>
+                            of <span x-text="data.total_rows?.toLocaleString()"></span>
+                        </span>
+                        <select x-model="limit" @change="loadFile()"
+                                class="bg-gray-700 rounded px-3 py-1 text-sm">
+                            <option value="50">50 per page</option>
+                            <option value="100">100 per page</option>
+                            <option value="200">200 per page</option>
+                            <option value="500">500 per page</option>
+                        </select>
+                    </div>
+                    <button @click="nextPage()" :disabled="offset + limit >= data.total_rows"
+                            class="px-4 py-2 bg-gray-700 rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-600">
+                        Next
+                    </button>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <!-- Loading -->
+    <template x-if="loading">
+        <div class="text-center py-12">
+            <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-gray-600 border-t-blue-500"></div>
+            <p class="mt-4 text-gray-400">Loading...</p>
+        </div>
+    </template>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function parquetViewer() {
+    return {
+        filePath: '',
+        data: null,
+        error: null,
+        loading: false,
+        offset: 0,
+        limit: 100,
+
+        init() {
+            // Check URL params for file path
+            const params = new URLSearchParams(window.location.search);
+            const path = params.get('path');
+            if (path) {
+                this.filePath = path;
+                this.loadFile();
+            }
+        },
+
+        async loadFile() {
+            if (!this.filePath) return;
+
+            this.loading = true;
+            this.error = null;
+
+            try {
+                const res = await fetch(`/api/parquet/preview?path=${encodeURIComponent(this.filePath)}&offset=${this.offset}&limit=${this.limit}`);
+                const result = await res.json();
+
+                if (result.error) {
+                    this.error = result.error;
+                    this.data = null;
+                } else {
+                    this.data = result;
+                }
+            } catch (e) {
+                this.error = e.message;
+                this.data = null;
+            }
+
+            this.loading = false;
+        },
+
+        async prevPage() {
+            if (this.offset > 0) {
+                this.offset = Math.max(0, this.offset - this.limit);
+                await this.loadFile();
+            }
+        },
+
+        async nextPage() {
+            if (this.offset + this.limit < this.data.total_rows) {
+                this.offset += this.limit;
+                await this.loadFile();
+            }
+        },
+
+        formatValue(val, dtype) {
+            if (val === null || val === undefined) return 'null';
+
+            // Format numbers
+            if (dtype?.includes('float')) {
+                return typeof val === 'number' ? val.toFixed(4) : val;
+            }
+
+            // Format timestamps
+            if (dtype?.includes('datetime') || (typeof val === 'string' && val.match(/^\d{4}-\d{2}-\d{2}T/))) {
+                try {
+                    return new Date(val).toLocaleString();
+                } catch {
+                    return val;
+                }
+            }
+
+            // Truncate long strings
+            if (typeof val === 'string' && val.length > 50) {
+                return val.substring(0, 50) + '...';
+            }
+
+            return val;
+        }
+    }
+}
+</script>
+{% endblock %}

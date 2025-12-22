@@ -1,0 +1,260 @@
+{% extends "base.html" %}
+
+{% block title %}Strategies - Spymaster{% endblock %}
+
+{% block content %}
+<div x-data="strategiesPage()" x-init="init()">
+    <div class="flex items-center justify-between mb-6">
+        <h1 class="text-3xl font-bold">Strategies</h1>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Strategy List -->
+        <div class="lg:col-span-1 bg-neutral-900 rounded-lg p-4 border border-neutral-800 max-h-[80vh] overflow-y-auto">
+            <h2 class="text-lg font-bold mb-4">All Strategies</h2>
+            <div class="space-y-2">
+                <template x-for="strategy in strategies" :key="strategy.name">
+                    <button @click="selectStrategy(strategy.name)"
+                            :class="{'bg-neutral-700': selected?.name === strategy.name, 'bg-neutral-800/50 hover:bg-neutral-800': selected?.name !== strategy.name}"
+                            class="w-full text-left p-3 rounded-lg transition-colors">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="font-medium" x-text="strategy.name"></p>
+                                <p class="text-sm text-gray-400 truncate" x-text="strategy.description"></p>
+                            </div>
+                            <span class="text-xs px-2 py-1 rounded"
+                                  :class="{'bg-green-500/20 text-green-400': strategy.exit_mode === 'continuous_signal',
+                                           'bg-yellow-500/20 text-yellow-400': strategy.exit_mode === 'rule_based',
+                                           'bg-purple-500/20 text-purple-400': strategy.exit_mode === 'neural_network'}"
+                                  x-text="strategy.exit_mode || 'unknown'"></span>
+                        </div>
+                        <div class="text-xs text-gray-500 mt-1">
+                            <span x-text="strategy.num_backtests + ' backtests'"></span>
+                        </div>
+                    </button>
+                </template>
+
+                <template x-if="strategies.length === 0">
+                    <div class="text-center text-gray-400 py-8">
+                        <p>No strategies found</p>
+                        <p class="text-sm mt-2">Click "New Strategy" to create one</p>
+                    </div>
+                </template>
+            </div>
+        </div>
+
+        <!-- Strategy Details -->
+        <div class="lg:col-span-2 bg-neutral-900 rounded-lg p-6 border border-neutral-800">
+            <template x-if="!selected">
+                <div class="text-center text-gray-400 py-12">
+                    <p>Select a strategy to view details</p>
+                </div>
+            </template>
+
+            <template x-if="selected">
+                <div>
+                    <div class="flex items-center justify-between mb-6">
+                        <div>
+                            <h2 class="text-2xl font-bold" x-text="selected.name"></h2>
+                            <p class="text-gray-400" x-text="selected.description"></p>
+                        </div>
+                        <div class="flex gap-2">
+                            <button @click="copyBacktestCommand()"
+                                    class="px-3 py-1 bg-neutral-800 rounded text-sm hover:bg-gray-600">
+                                Copy Backtest Command
+                            </button>
+                            <button @click="deleteStrategy()"
+                                    class="px-3 py-1 bg-red-600/50 rounded text-sm hover:bg-red-600">
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Checkpoints -->
+                    <div class="mb-6">
+                        <h3 class="text-lg font-bold mb-3">Checkpoints</h3>
+                        <div class="bg-neutral-950 rounded-lg p-4 space-y-2">
+                            <div class="flex items-center justify-between">
+                                <span class="text-gray-400">LeJEPA:</span>
+                                <a x-show="selected.checkpoints?.lejepa"
+                                   :href="'/checkpoints?select=' + getCheckpointName(selected.checkpoints?.lejepa)"
+                                   class="text-sm bg-neutral-800/50 px-2 py-1 rounded hover:bg-gray-600 text-primary-400"
+                                   x-text="selected.checkpoints?.lejepa || 'N/A'"></a>
+                                <span x-show="!selected.checkpoints?.lejepa" class="text-sm bg-neutral-800/50 px-2 py-1 rounded">N/A</span>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <span class="text-gray-400">Entry Policy:</span>
+                                <a x-show="selected.checkpoints?.entry_policy"
+                                   :href="'/checkpoints?select=' + getCheckpointName(selected.checkpoints?.entry_policy)"
+                                   class="text-sm bg-neutral-800/50 px-2 py-1 rounded hover:bg-gray-600 text-primary-400"
+                                   x-text="selected.checkpoints?.entry_policy || 'N/A'"></a>
+                                <span x-show="!selected.checkpoints?.entry_policy" class="text-sm bg-neutral-800/50 px-2 py-1 rounded">N/A</span>
+                            </div>
+                            <template x-if="selected.checkpoints?.exit_policy">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-gray-400">Exit Policy:</span>
+                                    <a :href="'/checkpoints?select=' + getCheckpointName(selected.checkpoints?.exit_policy)"
+                                       class="text-sm bg-neutral-800/50 px-2 py-1 rounded hover:bg-gray-600 text-primary-400"
+                                       x-text="selected.checkpoints.exit_policy"></a>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Exit Config -->
+                    <div class="mb-6">
+                        <h3 class="text-lg font-bold mb-3">Exit Configuration</h3>
+                        <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+                            <div class="bg-neutral-800/50 p-3 rounded-lg">
+                                <p class="text-xs text-gray-400">Mode</p>
+                                <p class="text-lg font-medium" x-text="selected.exit_mode || 'continuous_signal'"></p>
+                            </div>
+                            <template x-for="(value, key) in selected.exit_config" :key="key">
+                                <div class="bg-neutral-800/50 p-3 rounded-lg">
+                                    <p class="text-xs text-gray-400" x-text="key.replace(/_/g, ' ')"></p>
+                                    <p class="text-lg font-medium" x-text="formatValue(value)"></p>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Backtest Config -->
+                    <div class="mb-6">
+                        <h3 class="text-lg font-bold mb-3">Backtest Configuration</h3>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <template x-for="(value, key) in selected.backtest" :key="key">
+                                <div class="bg-neutral-800/50 p-3 rounded-lg">
+                                    <p class="text-xs text-gray-400" x-text="key.replace(/_/g, ' ')"></p>
+                                    <p class="text-lg font-medium" x-text="formatValue(value)"></p>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Backtest History -->
+                    <div>
+                        <h3 class="text-lg font-bold mb-3">Backtest History</h3>
+                        <template x-if="selected.backtests?.length > 0">
+                            <div class="space-y-3">
+                                <template x-for="bt in selected.backtests" :key="bt.id">
+                                    <div class="bg-neutral-800/50 p-4 rounded-lg">
+                                        <div class="flex items-center justify-between mb-2">
+                                            <div>
+                                                <span class="font-medium" x-text="bt.date_range?.start + ' to ' + bt.date_range?.end"></span>
+                                                <span class="text-xs text-gray-400 ml-2" x-text="new Date(bt.run_at).toLocaleDateString()"></span>
+                                            </div>
+                                            <a x-show="bt.report_path" :href="'/api/report/' + bt.report_path.split('/').pop()"
+                                               target="_blank"
+                                               class="text-primary-400 text-sm hover:underline">
+                                                View Report
+                                            </a>
+                                        </div>
+                                        <div class="grid grid-cols-4 gap-4 text-sm">
+                                            <div>
+                                                <span class="text-gray-400">Return:</span>
+                                                <span x-text="(bt.metrics?.total_return_pct || bt.metrics?.total_return || 0).toFixed(2) + '%'"
+                                                      :class="{'text-green-400': (bt.metrics?.total_return_pct || bt.metrics?.total_return || 0) > 0, 'text-red-400': (bt.metrics?.total_return_pct || bt.metrics?.total_return || 0) < 0}"></span>
+                                            </div>
+                                            <div>
+                                                <span class="text-gray-400">Sharpe:</span>
+                                                <span x-text="(bt.metrics?.sharpe_ratio || 0).toFixed(2)"></span>
+                                            </div>
+                                            <div>
+                                                <span class="text-gray-400">Win Rate:</span>
+                                                <span x-text="((bt.metrics?.win_rate || 0) * 100).toFixed(1) + '%'"></span>
+                                            </div>
+                                            <div>
+                                                <span class="text-gray-400">Trades:</span>
+                                                <span x-text="bt.metrics?.total_trades || 0"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
+                        <template x-if="!selected.backtests || selected.backtests.length === 0">
+                            <div class="text-center text-gray-400 py-8 bg-neutral-800/20 rounded-lg">
+                                <p>No backtests yet</p>
+                                <p class="text-sm mt-2">Run a backtest with <code class="bg-neutral-800/50 px-1">--strategy <span x-text="selected.name"></span></code></p>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function strategiesPage() {
+    return {
+        strategies: [],
+        selected: null,
+
+        async init() {
+            await this.loadStrategies();
+            // Check for URL parameter to auto-select
+            const params = new URLSearchParams(window.location.search);
+            const selectName = params.get('select');
+            if (selectName) {
+                await this.selectStrategy(selectName);
+            }
+        },
+
+        async loadStrategies() {
+            const res = await fetch('/api/strategies');
+            this.strategies = await res.json();
+        },
+
+        async selectStrategy(name) {
+            const res = await fetch(`/api/strategy/${name}`);
+            this.selected = await res.json();
+        },
+
+        getCheckpointName(path) {
+            // Extract checkpoint folder name from path like "checkpoints/lejepa_v3/lejepa_best.pt"
+            if (!path) return '';
+            const parts = path.split('/');
+            if (parts.length >= 2 && parts[0] === 'checkpoints') {
+                return parts[1];
+            }
+            return parts[parts.length - 2] || parts[0];
+        },
+
+        async deleteStrategy() {
+            if (!confirm(`Delete strategy "${this.selected.name}"?`)) return;
+
+            const res = await fetch(`/api/strategy/${this.selected.name}`, {
+                method: 'DELETE'
+            });
+
+            if (res.ok) {
+                this.selected = null;
+                await this.loadStrategies();
+            } else {
+                const err = await res.json();
+                alert('Error: ' + err.error);
+            }
+        },
+
+        copyBacktestCommand() {
+            const cmd = `uv run python -m src.backtest.runner --strategy ${this.selected.name} --start_date 2025-01-01 --end_date 2025-03-31`;
+            navigator.clipboard.writeText(cmd);
+            alert('Backtest command copied to clipboard!');
+        },
+
+        formatValue(val) {
+            if (val === null || val === undefined) return '-';
+            if (typeof val === 'boolean') return val ? 'Yes' : 'No';
+            if (typeof val === 'number') {
+                if (Number.isInteger(val)) return val.toLocaleString();
+                return val.toFixed(2);
+            }
+            return val;
+        }
+    }
+}
+</script>
+{% endblock %}

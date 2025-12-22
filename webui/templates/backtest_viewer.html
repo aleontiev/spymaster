@@ -1,0 +1,349 @@
+{% extends "base.html" %}
+
+{% block title %}Backtest: {{ backtest_name }} - Spymaster{% endblock %}
+
+{% block content %}
+<div x-data="backtestViewerApp('{{ backtest_name }}')" x-init="loadBacktest()">
+    <!-- Header -->
+    <div class="mb-6">
+        <div class="flex items-center gap-2 mb-2">
+            <a href="/backtests" class="text-gray-400 hover:text-white">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                </svg>
+            </a>
+            <h1 class="text-2xl font-bold" x-text="data.title || '{{ backtest_name }}'">Loading...</h1>
+        </div>
+        <div class="flex flex-wrap items-center gap-4 text-sm">
+            <p class="text-gray-400" x-text="data.date_range ? data.date_range.start + ' to ' + data.date_range.end + ' | ' + (data.total_bars || 0).toLocaleString() + ' bars' : ''"></p>
+            <template x-if="data.strategy_id || data.strategy_name">
+                <a :href="getStrategyLink()"
+                   class="inline-flex items-center gap-1 px-2 py-1 bg-primary-900/30 text-primary-400 rounded hover:bg-primary-900/50">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                    </svg>
+                    <span x-text="data.strategy_name || (data.strategy_id ? data.strategy_id.substring(0, 8) + '...' : '')"></span>
+                </a>
+            </template>
+        </div>
+    </div>
+
+    <!-- Loading State -->
+    <div x-show="loading" class="flex justify-center py-12">
+        <svg class="animate-spin h-8 w-8 text-primary-500" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+    </div>
+
+    <!-- Error State -->
+    <div x-show="error" class="bg-red-900/20 border border-red-800 rounded-lg p-4 text-red-400">
+        <span x-text="error"></span>
+    </div>
+
+    <!-- Content -->
+    <div x-show="!loading && !error" x-cloak>
+        <!-- Metrics Grid -->
+        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-6">
+            <template x-for="metric in metricsDisplay" :key="metric.key">
+                <div class="bg-neutral-900 rounded-lg border border-neutral-800 p-3 text-center">
+                    <div class="text-xl font-bold" :class="metric.colorClass" x-text="metric.value"></div>
+                    <div class="text-xs text-gray-500 uppercase tracking-wide" x-text="metric.label"></div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Price Chart -->
+        <div class="bg-neutral-900 rounded-lg border border-neutral-800 p-4 mb-6">
+            <h2 class="text-lg font-medium mb-3">SPY Price Chart with Trade Markers</h2>
+            <div id="priceChart" style="height: 450px;"></div>
+            <div class="flex justify-center gap-6 mt-2 text-sm text-gray-400">
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-blue-500"></div>
+                    <span>CALL Entry</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-pink-500"></div>
+                    <span>PUT Entry</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded bg-yellow-500"></div>
+                    <span>Exit</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Equity Curve -->
+        <div class="bg-neutral-900 rounded-lg border border-neutral-800 p-4 mb-6">
+            <h2 class="text-lg font-medium mb-3">Equity Curve</h2>
+            <div id="equityChart" style="height: 250px;"></div>
+        </div>
+
+        <!-- Trades Table -->
+        <div class="bg-neutral-900 rounded-lg border border-neutral-800 p-4 mb-6">
+            <h2 class="text-lg font-medium mb-3">
+                Trade History
+                <span class="text-sm font-normal text-gray-400" x-text="'(' + (data.metrics?.winning_trades || 0) + ' wins, ' + (data.metrics?.losing_trades || 0) + ' losses)'"></span>
+            </h2>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="text-left text-gray-400 border-b border-neutral-800">
+                            <th class="pb-2 pr-4">ID</th>
+                            <th class="pb-2 pr-4">Type</th>
+                            <th class="pb-2 pr-4">Qty</th>
+                            <th class="pb-2 pr-4">Entry Time</th>
+                            <th class="pb-2 pr-4">Entry Price</th>
+                            <th class="pb-2 pr-4">Exit Time</th>
+                            <th class="pb-2 pr-4">Exit Price</th>
+                            <th class="pb-2 pr-4">P&L</th>
+                            <th class="pb-2">Duration</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="trade in data.trades || []" :key="trade.id">
+                            <tr class="border-b border-neutral-800/50 hover:bg-neutral-800/30">
+                                <td class="py-2 pr-4" x-text="trade.id"></td>
+                                <td class="py-2 pr-4">
+                                    <span :class="trade.type === 'CALL' ? 'text-blue-400' : 'text-pink-400'" x-text="trade.type"></span>
+                                </td>
+                                <td class="py-2 pr-4" x-text="trade.quantity"></td>
+                                <td class="py-2 pr-4" x-text="trade.entry_time"></td>
+                                <td class="py-2 pr-4" x-text="trade.entry_price"></td>
+                                <td class="py-2 pr-4" x-text="trade.exit_time"></td>
+                                <td class="py-2 pr-4" x-text="trade.exit_price"></td>
+                                <td class="py-2 pr-4" :class="trade.pnl >= 0 ? 'text-green-400' : 'text-red-400'" x-text="trade.pnl_formatted"></td>
+                                <td class="py-2" x-text="trade.holding_mins + ' min'"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Configuration -->
+        <div class="bg-neutral-900 rounded-lg border border-neutral-800 p-4">
+            <h2 class="text-lg font-medium mb-3">Backtest Configuration</h2>
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                <template x-for="item in configDisplay" :key="item.label">
+                    <div class="flex justify-between py-1 border-b border-neutral-800/50">
+                        <span class="text-gray-400" x-text="item.label"></span>
+                        <span class="font-medium" x-text="item.value"></span>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<script>
+function backtestViewerApp(backtestName) {
+    return {
+        data: {},
+        loading: true,
+        error: null,
+
+        get metricsDisplay() {
+            if (!this.data.metrics) return [];
+            const m = this.data.metrics;
+            return [
+                { key: 'return', label: 'Total Return', value: (m.total_return >= 0 ? '+' : '') + m.total_return.toFixed(2) + '%', colorClass: m.total_return >= 0 ? 'text-green-400' : 'text-red-400' },
+                { key: 'pnl', label: 'Total P&L', value: '$' + (m.total_pnl >= 0 ? '+' : '') + m.total_pnl.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}), colorClass: m.total_pnl >= 0 ? 'text-green-400' : 'text-red-400' },
+                { key: 'equity', label: 'Final Equity', value: '$' + m.final_equity.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}), colorClass: '' },
+                { key: 'trades', label: 'Total Trades', value: m.total_trades, colorClass: '' },
+                { key: 'winrate', label: 'Win Rate', value: (m.win_rate * 100).toFixed(1) + '%', colorClass: m.win_rate >= 0.5 ? 'text-green-400' : 'text-yellow-400' },
+                { key: 'sharpe', label: 'Sharpe Ratio', value: m.sharpe_ratio.toFixed(2), colorClass: m.sharpe_ratio >= 1 ? 'text-green-400' : '' },
+                { key: 'maxdd', label: 'Max Drawdown', value: '-' + (m.max_drawdown * 100).toFixed(1) + '%', colorClass: 'text-red-400' },
+                { key: 'pf', label: 'Profit Factor', value: m.profit_factor.toFixed(2), colorClass: m.profit_factor >= 1.5 ? 'text-green-400' : '' },
+                { key: 'expectancy', label: 'Expectancy', value: '$' + (m.expectancy >= 0 ? '+' : '') + m.expectancy.toFixed(2), colorClass: m.expectancy >= 0 ? 'text-green-400' : 'text-red-400' },
+                { key: 'rr', label: 'Risk/Reward', value: m.risk_reward.toFixed(2), colorClass: '' },
+                { key: 'avgwin', label: 'Avg Win', value: '$' + m.avg_win.toFixed(2), colorClass: 'text-green-400' },
+                { key: 'avgloss', label: 'Avg Loss', value: '$' + m.avg_loss.toFixed(2), colorClass: 'text-red-400' },
+            ];
+        },
+
+        get configDisplay() {
+            if (!this.data.config) return [];
+            const c = this.data.config;
+            return [
+                { label: 'Initial Capital', value: '$' + c.initial_capital?.toLocaleString() },
+                { label: 'Max Position Size', value: (c.max_position_size * 100).toFixed(1) + '%' },
+                { label: 'Slippage', value: c.slippage_bps?.toFixed(1) + ' bps' },
+                { label: 'Commission', value: '$' + c.commission_per_contract?.toFixed(2) + '/contract' },
+                { label: 'Bid-Ask Spread', value: c.spread_pct?.toFixed(1) + '%' },
+                { label: 'Options Multiplier', value: c.options_multiplier + 'x' },
+            ];
+        },
+
+        getStrategyLink() {
+            // Prefer strategy_name for URL (human-readable), fall back to strategy_id
+            if (this.data.strategy_name) {
+                return '/strategies#' + this.data.strategy_name;
+            } else if (this.data.strategy_id) {
+                return '/strategies#id:' + this.data.strategy_id;
+            }
+            return '#';
+        },
+
+        async loadBacktest() {
+            try {
+                const response = await fetch('/api/backtest/' + backtestName);
+                if (!response.ok) {
+                    throw new Error('Failed to load backtest');
+                }
+                this.data = await response.json();
+                this.$nextTick(() => {
+                    this.renderCharts();
+                });
+            } catch (err) {
+                this.error = err.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        renderCharts() {
+            this.renderPriceChart();
+            this.renderEquityChart();
+        },
+
+        renderPriceChart() {
+            const candles = this.data.candles;
+            if (!candles || !candles.timestamps) return;
+
+            const candlestick = {
+                type: 'candlestick',
+                x: candles.timestamps,
+                open: candles.open,
+                high: candles.high,
+                low: candles.low,
+                close: candles.close,
+                increasing: { line: { color: '#4ade80' }, fillcolor: '#4ade80' },
+                decreasing: { line: { color: '#f87171' }, fillcolor: '#f87171' },
+                name: 'SPY',
+            };
+
+            const markers = this.data.trade_markers || [];
+            const callEntries = markers.filter(m => m.type === 'entry' && m.position === 'call');
+            const putEntries = markers.filter(m => m.type === 'entry' && m.position === 'put');
+            const exits = markers.filter(m => m.type === 'exit');
+
+            const findPrice = (timestamp, low) => {
+                const idx = candles.timestamps.findIndex(t => t >= timestamp);
+                if (idx < 0) return null;
+                return low ? candles.low[idx] * 0.999 : candles.high[idx] * 1.001;
+            };
+
+            const callEntryMarkers = {
+                type: 'scatter',
+                mode: 'markers',
+                x: callEntries.map(m => m.timestamp),
+                y: callEntries.map(m => findPrice(m.timestamp, true)),
+                marker: { symbol: 'triangle-up', size: 12, color: '#60a5fa' },
+                name: 'CALL Entry',
+                text: callEntries.map(m => `CALL Entry: $${m.price.toFixed(2)} x${m.quantity}`),
+                hoverinfo: 'text+x',
+            };
+
+            const putEntryMarkers = {
+                type: 'scatter',
+                mode: 'markers',
+                x: putEntries.map(m => m.timestamp),
+                y: putEntries.map(m => findPrice(m.timestamp, true)),
+                marker: { symbol: 'triangle-down', size: 12, color: '#f472b6' },
+                name: 'PUT Entry',
+                text: putEntries.map(m => `PUT Entry: $${m.price.toFixed(2)} x${m.quantity}`),
+                hoverinfo: 'text+x',
+            };
+
+            const exitMarkers = {
+                type: 'scatter',
+                mode: 'markers',
+                x: exits.map(m => m.timestamp),
+                y: exits.map(m => findPrice(m.timestamp, false)),
+                marker: { symbol: 'x', size: 10, color: '#fbbf24', line: { width: 2 } },
+                name: 'Exit',
+                text: exits.map(m => `Exit: $${m.price.toFixed(2)} | P&L: ${m.pnl >= 0 ? '+' : ''}$${m.pnl.toFixed(2)}`),
+                hoverinfo: 'text+x',
+            };
+
+            const layout = {
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#e4e4e7' },
+                xaxis: {
+                    type: 'date',
+                    rangeslider: { visible: false },
+                    gridcolor: 'rgba(255,255,255,0.1)',
+                    showgrid: true,
+                },
+                yaxis: {
+                    gridcolor: 'rgba(255,255,255,0.1)',
+                    showgrid: true,
+                    title: 'Price ($)',
+                },
+                margin: { l: 60, r: 20, t: 20, b: 40 },
+                showlegend: true,
+                legend: { orientation: 'h', y: -0.15, x: 0.5, xanchor: 'center' },
+                hovermode: 'x unified',
+                dragmode: 'pan',
+            };
+
+            Plotly.newPlot('priceChart', [candlestick, callEntryMarkers, putEntryMarkers, exitMarkers], layout, {
+                responsive: true,
+                scrollZoom: true,
+                displayModeBar: true,
+                modeBarButtonsToRemove: ['select2d', 'lasso2d', 'toImage'],
+                displaylogo: false,
+            });
+        },
+
+        renderEquityChart() {
+            const equity = this.data.equity_curve;
+            if (!equity || equity.length === 0) return;
+
+            const trace = {
+                type: 'scatter',
+                mode: 'lines',
+                x: equity.map(d => d.timestamp),
+                y: equity.map(d => d.equity),
+                line: { color: '#60a5fa', width: 2 },
+                fill: 'tozeroy',
+                fillcolor: 'rgba(96, 165, 250, 0.1)',
+                name: 'Equity',
+            };
+
+            const layout = {
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#e4e4e7' },
+                xaxis: {
+                    type: 'date',
+                    gridcolor: 'rgba(255,255,255,0.1)',
+                    showgrid: true,
+                },
+                yaxis: {
+                    gridcolor: 'rgba(255,255,255,0.1)',
+                    showgrid: true,
+                    title: 'Equity ($)',
+                },
+                margin: { l: 60, r: 20, t: 20, b: 40 },
+                showlegend: false,
+                dragmode: 'pan',
+            };
+
+            Plotly.newPlot('equityChart', [trace], layout, {
+                responsive: true,
+                scrollZoom: true,
+                displayModeBar: true,
+                modeBarButtonsToRemove: ['select2d', 'lasso2d', 'toImage'],
+                displaylogo: false,
+            });
+        }
+    };
+}
+</script>
+{% endblock %}

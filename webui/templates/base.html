@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Spymaster{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#f0fdf4',
+                            100: '#dcfce7',
+                            200: '#bbf7d0',
+                            300: '#86efac',
+                            400: '#4ade80',
+                            500: '#22c55e',
+                            600: '#16a34a',
+                            700: '#15803d',
+                            800: '#166534',
+                            900: '#14532d',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        [x-cloak] { display: none !important; }
+        .tree-item { cursor: pointer; }
+        .tree-item:hover { background-color: rgba(34, 197, 94, 0.1); }
+        pre { white-space: pre-wrap; word-wrap: break-word; }
+        .table-container { max-height: 70vh; overflow: auto; }
+        .sticky-header th { position: sticky; top: 0; background: #1a1a1a; z-index: 10; }
+
+        /* Dark themed scrollbars */
+        * {
+            scrollbar-width: thin;
+            scrollbar-color: #404040 #171717;
+        }
+        *::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        *::-webkit-scrollbar-track {
+            background: #171717;
+            border-radius: 4px;
+        }
+        *::-webkit-scrollbar-thumb {
+            background: #404040;
+            border-radius: 4px;
+        }
+        *::-webkit-scrollbar-thumb:hover {
+            background: #525252;
+        }
+    </style>
+</head>
+<body class="bg-neutral-950 text-gray-100 min-h-screen">
+    <!-- Sticky Navigation -->
+    <nav class="bg-neutral-900 border-b border-neutral-800 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center">
+                    <!-- Logo -->
+                    <a href="/" class="flex items-center gap-2">
+                        <svg class="w-8 h-8" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <!-- Eye outline -->
+                            <ellipse cx="16" cy="16" rx="14" ry="10" stroke="white" stroke-width="2" fill="none"/>
+                            <!-- Iris -->
+                            <circle cx="16" cy="16" r="6" fill="white"/>
+                            <!-- Pupil -->
+                            <circle cx="16" cy="16" r="3" fill="#171717"/>
+                            <!-- Market bars inside pupil -->
+                            <rect x="14" y="14" width="1" height="4" fill="#22c55e"/>
+                            <rect x="16" y="13" width="1" height="5" fill="#22c55e"/>
+                            <rect x="18" y="15" width="1" height="3" fill="#22c55e"/>
+                        </svg>
+                    </a>
+                    <div class="ml-8 flex items-baseline space-x-1">
+                        <a href="/" class="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium hover:bg-neutral-800 {% if request.path == '/' %}bg-neutral-800 text-primary-400{% endif %}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z"></path>
+                            </svg>
+                            Dashboard
+                        </a>
+                        <a href="/checkpoints" class="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium hover:bg-neutral-800 {% if request.path == '/checkpoints' %}bg-neutral-800 text-primary-400{% endif %}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            Checkpoints
+                        </a>
+                        <a href="/strategies" class="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium hover:bg-neutral-800 {% if request.path == '/strategies' %}bg-neutral-800 text-primary-400{% endif %}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                            </svg>
+                            Strategies
+                        </a>
+                        <a href="/data" class="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium hover:bg-neutral-800 {% if request.path == '/data' %}bg-neutral-800 text-primary-400{% endif %}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path>
+                            </svg>
+                            Data
+                        </a>
+                        <a href="/backtests" class="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium hover:bg-neutral-800 {% if request.path.startswith('/backtest') %}bg-neutral-800 text-primary-400{% endif %}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                            </svg>
+                            Backtests
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 py-6">
+        {% block content %}{% endblock %}
+    </main>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
