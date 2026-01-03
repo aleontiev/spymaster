@@ -28,6 +28,7 @@ from src.data.loader import (
     RAW_CACHE_DIR,
     DAILY_CACHE_DIR,
     get_market_hours_utc,
+    get_market_duration_secs,
     normalize_features,
     load_gex_flow_for_date,
     compute_options_features_vectorized,
@@ -311,7 +312,7 @@ class LoaderWorker:
         from datetime import timezone as dt_tz
         market_close_unix = market_close_utc.replace(tzinfo=dt_tz.utc).timestamp()
         market_open_unix = market_open_utc.replace(tzinfo=dt_tz.utc).timestamp()
-        MARKET_DURATION_SECS = 6.5 * 3600
+        market_duration_secs = get_market_duration_secs(target_date)
 
         # Time to close
         timestamp_unix = target_minute.replace(tzinfo=dt_tz.utc).timestamp()
@@ -321,7 +322,7 @@ class LoaderWorker:
 
         # Time progress
         elapsed = bar_end_unix - market_open_unix
-        progress = elapsed / MARKET_DURATION_SECS
+        progress = elapsed / market_duration_secs
         combined["sin_time"] = np.sin(2 * np.pi * progress)
         combined["cos_time"] = np.cos(2 * np.pi * progress)
 

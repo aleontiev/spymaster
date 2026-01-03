@@ -30,7 +30,7 @@ MIGRATIONS = [
     ("data/oi", r"SPY_OI-0DTE_(\d{4}-\d{2}-\d{2})\.parquet", "data/oi-day"),
     ("data/greeks", r"SPY_GREEKS-1M_(\d{4}-\d{2}-\d{2})\.parquet", "data/greeks-1m"),
     # Computed data
-    ("data/gex_flow", r"SPY_thetadata_1m_combined_(\d{4}-\d{2}-\d{2})\.parquet", "data/gex-flow-1m"),
+    ("data/gex_flow", r"SPY_thetadata_1m_combined_(\d{4}-\d{2}-\d{2})\.parquet", "data/options-flow-1m"),
     # Training data (cache)
     ("data/cache/raw", r"SPY_raw_(\d{4}-\d{2}-\d{2})\.parquet", "data/training-1m-raw"),
     ("data/cache/normalized", r"SPY_v\d+_(\d{4}-\d{2}-\d{2})\.parquet", "data/training-1m-normalized"),
@@ -205,7 +205,7 @@ def verify_migration(project_root: Path) -> bool:
         "data/options-1m",
         "data/oi-day",
         "data/greeks-1m",
-        "data/gex-flow-1m",
+        "data/options-flow-1m",
         "data/training-1m-raw",
         "data/training-1m-normalized",
     ]

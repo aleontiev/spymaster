@@ -3,7 +3,7 @@
 Rebuild GEX flow and training data for a date range.
 
 This script uses the DAGLoader to force recomputation of:
-- gex-flow-1m: GEX flow features
+- options-flow-1m: Options flow features
 - training-1m-raw: Raw training data (includes GEX flow)
 
 Usage:
@@ -14,7 +14,7 @@ Usage:
     uv run python scripts/rebuild_gex_training.py --start 2025-12-13 --end 2025-12-19
 
     # Rebuild specific dataset only
-    uv run python scripts/rebuild_gex_training.py --days 7 --dataset gex-flow-1m
+    uv run python scripts/rebuild_gex_training.py --days 7 --dataset options-flow-1m
 """
 
 import argparse
@@ -39,7 +39,7 @@ def main():
     parser.add_argument("--end", type=str, help="End date (YYYY-MM-DD)")
     parser.add_argument("--days", type=int, default=7, help="Number of days back from today (default: 7)")
     parser.add_argument("--underlying", type=str, default="SPY", help="Underlying symbol (default: SPY)")
-    parser.add_argument("--dataset", type=str, choices=["gex-flow-1m", "training-1m-raw", "all"],
+    parser.add_argument("--dataset", type=str, choices=["options-flow-1m", "training-1m-raw", "all"],
                        default="all", help="Dataset to rebuild (default: all)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be rebuilt")
 
@@ -67,10 +67,10 @@ def main():
 
         with DAGLoader() as loader:
             # Show resolution trees
-            if args.dataset in ("gex-flow-1m", "all"):
-                print("gex-flow-1m resolution:")
+            if args.dataset in ("options-flow-1m", "all"):
+                print("options-flow-1m resolution:")
                 for d in loader._get_trading_dates(start_date, end_date):
-                    tree = loader.build_resolution_tree("gex-flow-1m", args.underlying, d, force_recompute=True)
+                    tree = loader.build_resolution_tree("options-flow-1m", args.underlying, d, force_recompute=True)
                     loader.print_resolution_tree(tree)
                     print()
 
@@ -100,23 +100,23 @@ def main():
 
     # Rebuild datasets
     with DAGLoader() as loader:
-        if args.dataset in ("gex-flow-1m", "all"):
-            print("Rebuilding gex-flow-1m...")
+        if args.dataset in ("options-flow-1m", "all"):
+            print("Rebuilding options-flow-1m...")
             print("-" * 40)
 
             # First clear existing cache for the date range
-            loader.clear_cache("gex-flow-1m", args.underlying, start_date, end_date)
+            loader.clear_cache("options-flow-1m", args.underlying, start_date, end_date)
 
             # Then load with force_recompute
             df = loader.load(
-                dataset="gex-flow-1m",
+                dataset="options-flow-1m",
                 underlying=args.underlying,
                 start_date=start_date,
                 end_date=end_date,
                 force_recompute=True,
                 progress_callback=progress_callback,
             )
-            print(f"\ngex-flow-1m: {len(df)} total rows rebuilt")
+            print(f"\noptions-flow-1m: {len(df)} total rows rebuilt")
             print()
 
         if args.dataset in ("training-1m-raw", "all"):

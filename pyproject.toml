@@ -24,6 +24,9 @@ dependencies = [
     "rich>=14.2.0",
     "arrow>=1.4.0",
     "sqlalchemy>=2.0.45",
+    "alpaca-py>=0.43.2",
+    "polars>=1.36.1",
+    "scipy>=1.15.3",
 ]
 
 [project.optional-dependencies]
@@ -66,3 +69,8 @@ no_implicit_optional = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.1",
+]

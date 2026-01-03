@@ -67,6 +67,309 @@ from src.managers.checkpoint_manager import CheckpointManager
 
 
 # =============================================================================
+# JEPA Sliding Window Dataset
+# =============================================================================
+
+
+class JEPASlidingWindowDataset(Dataset):
+    """
+    Simple sliding window dataset for JEPA training.
+
+    Creates (context, target) pairs from a DataFrame of normalized features.
+    """
+
+    def __init__(
+        self,
+        data: torch.Tensor,
+        context_len: int,
+        target_len: int,
+        prediction_gap: int = 0,
+        stride: int = 1,
+    ):
+        """
+        Args:
+            data: Tensor of shape (num_rows, num_features)
+            context_len: Number of candles for context window
+            target_len: Number of candles for target window
+            prediction_gap: Gap between context end and target start
+            stride: Step size for sliding window
+        """
+        self.data = data
+        self.context_len = context_len
+        self.target_len = target_len
+        self.prediction_gap = prediction_gap
+        self.stride = stride
+
+        # Calculate valid indices
+        total_len = context_len + prediction_gap + target_len
+        max_start = len(data) - total_len
+        self.indices = list(range(0, max_start + 1, stride))
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        start = self.indices[idx]
+        context_end = start + self.context_len
+        target_start = context_end + self.prediction_gap
+        target_end = target_start + self.target_len
+
+        context = self.data[start:context_end]
+        target = self.data[target_start:target_end]
+
+        return context, target
+
+
+class JEPADatasetWithPremarket(Dataset):
+    """
+    JEPA dataset with premarket and opening range.
+
+    Each day's data has:
+    - premarket: 4 candles × 5 OHLCV (T-3, T-2, T-1, PM ranges)
+    - opening_range: 1 candle × 5 OHLCV (aggregated 9:30-9:44 AM)
+    - market: Variable candles × N features (9:45 AM onwards)
+
+    Creates (premarket, opening_range, context, target) tuples.
+    """
+
+    def __init__(
+        self,
+        day_data: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],  # (premarket, opening_range, market)
+        context_len: int,
+        target_len: int,
+        prediction_gap: int = 0,
+        stride: int = 1,
+    ):
+        self.day_data = day_data
+        self.context_len = context_len
+        self.target_len = target_len
+        self.prediction_gap = prediction_gap
+        self.stride = stride
+
+        # Build index: (day_idx, start_within_day)
+        self.indices = []
+        total_len = context_len + prediction_gap + target_len
+        for day_idx, (premarket, opening_range, market) in enumerate(day_data):
+            max_start = len(market) - total_len
+            for start in range(0, max_start + 1, stride):
+                self.indices.append((day_idx, start))
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        day_idx, start = self.indices[idx]
+        premarket, opening_range, market = self.day_data[day_idx]
+
+        context_end = start + self.context_len
+        target_start = context_end + self.prediction_gap
+        target_end = target_start + self.target_len
+
+        context = market[start:context_end]
+        target = market[target_start:target_end]
+
+        return premarket, opening_range, context, target
+
+
+def create_sliding_window_dataset(
+    df: pd.DataFrame,
+    context_len: int,
+    target_len: int,
+    prediction_gap: int = 0,
+    stride: int = 1,
+) -> JEPASlidingWindowDataset:
+    """
+    Create a JEPA sliding window dataset from a DataFrame.
+
+    Args:
+        df: DataFrame with normalized features (excluding timestamp/date columns)
+        context_len: Number of candles for context window
+        target_len: Number of candles for target window
+        prediction_gap: Gap between context end and target start
+        stride: Step size for sliding window
+
+    Returns:
+        JEPASlidingWindowDataset ready for training
+    """
+    # Convert to tensor (float32 for training)
+    data = torch.tensor(df.values, dtype=torch.float32)
+
+    return JEPASlidingWindowDataset(
+        data=data,
+        context_len=context_len,
+        target_len=target_len,
+        prediction_gap=prediction_gap,
+        stride=stride,
+    )
+
+
+def load_raw_training_data_with_premarket(
+    raw_dir: Path,
+    start_date,
+    end_date,
+    max_files: Optional[int] = None,
+    opening_range_minutes: int = 15,
+) -> Tuple[List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]], List]:
+    """
+    Load raw training data with premarket and opening range separated.
+
+    Args:
+        raw_dir: Path to training-1m-raw/{underlying} directory
+        start_date: Start date
+        end_date: End date
+        max_files: Optional limit on number of files
+        opening_range_minutes: Minutes for opening range aggregation (default: 15)
+
+    Returns:
+        Tuple of:
+        - List of (premarket, opening_range, market) tensors per day
+        - List of dates
+    """
+    # Find all parquet files
+    all_files = []
+    for month_dir in sorted(raw_dir.iterdir()):
+        if not month_dir.is_dir():
+            continue
+        for parquet_file in sorted(month_dir.glob("*.parquet")):
+            try:
+                month_str = month_dir.name
+                day_str = parquet_file.stem
+                file_date = datetime.strptime(f"{month_str}-{day_str}", "%Y-%m-%d").date()
+
+                if start_date and file_date < start_date:
+                    continue
+                if end_date and file_date > end_date:
+                    continue
+                all_files.append((file_date, parquet_file))
+            except ValueError:
+                continue
+
+    all_files.sort(key=lambda x: x[0])
+
+    if max_files:
+        all_files = all_files[:max_files]
+
+    day_data = []
+    dates = []
+
+    # OHLCV columns for premarket and opening range
+    ohlcv_cols = ["open", "high", "low", "close", "volume"]
+
+    # Canonical market features (consistent across all raw data files)
+    # These 27 features are normalized in the model
+    market_cols = [
+        # Price features (5)
+        "open", "high", "low", "close", "volume",
+        # VWAP (1)
+        "vwap",
+        # Options flow (10)
+        "atm_spread", "net_premium_flow",
+        "call_strikes_active", "put_strikes_active",
+        "atm_call_volume", "otm_call_volume",
+        "atm_put_volume", "otm_put_volume",
+        # Greeks/GEX (columns common to both old and new formats)
+        "net_gex", "net_dex",
+        # Technical indicators (4)
+        "anchored_vwap_z", "vwap_divergence", "implied_volatility",
+        # Time features (3)
+        "time_to_close", "sin_time", "cos_time",
+    ]
+
+    for file_date, parquet_file in tqdm(all_files, desc="Loading raw data", unit="day"):
+        df = pd.read_parquet(parquet_file)
+
+        # Set timestamp as index if present
+        if "timestamp" in df.columns:
+            df = df.set_index("timestamp")
+
+        # Determine if we have premarket rows (8 premarket + market rows)
+        has_premarket = len(df) > 390
+        premarket_offset = 8 if has_premarket else 0
+
+        if has_premarket:
+            # Extract T-3, T-2, T-1, PM (skip blanks at positions 1, 3, 5, 7)
+            premarket_rows = df.iloc[:8:2]  # rows 0, 2, 4, 6
+            premarket_df = premarket_rows[ohlcv_cols].copy()
+        else:
+            # No premarket - create zeros
+            premarket_df = pd.DataFrame(0.0, index=range(4), columns=ohlcv_cols)
+
+        # Market data starts after premarket
+        market_full = df.iloc[premarket_offset:]
+
+        # Reference price for normalization: first market candle's open
+        ref_price = market_full["open"].iloc[0]
+        if ref_price <= 0:
+            ref_price = 1.0  # Fallback to avoid log(0)
+
+        # Normalize premarket OHLCV using log returns relative to ref_price
+        # Prices -> log(price / ref_price), Volume -> log(1 + volume / 1e6)
+        # Clip prices to avoid log(0) - use a small epsilon
+        eps = 1e-8
+        if has_premarket:
+            premarket_normalized = premarket_df.copy()
+            for col in ["open", "high", "low", "close"]:
+                prices = np.clip(premarket_df[col].values, eps, None)
+                premarket_normalized[col] = np.log(prices / ref_price)
+            premarket_normalized["volume"] = np.log1p(premarket_df["volume"] / 1e6)
+            premarket_df = premarket_normalized
+        else:
+            # No premarket - zeros are fine (log return of 0 = price equals ref)
+            pass
+
+        # Compute opening range (aggregate first N minutes)
+        opening_range_rows = market_full.iloc[:opening_range_minutes]
+        if len(opening_range_rows) >= opening_range_minutes:
+            raw_opening_range = {
+                "open": max(opening_range_rows["open"].iloc[0], eps),
+                "high": max(opening_range_rows["high"].max(), eps),
+                "low": max(opening_range_rows["low"].min(), eps),
+                "close": max(opening_range_rows["close"].iloc[-1], eps),
+                "volume": opening_range_rows["volume"].sum(),
+            }
+            # Normalize opening range using log returns
+            opening_range = {
+                "open": np.log(raw_opening_range["open"] / ref_price),
+                "high": np.log(raw_opening_range["high"] / ref_price),
+                "low": np.log(raw_opening_range["low"] / ref_price),
+                "close": np.log(raw_opening_range["close"] / ref_price),
+                "volume": np.log1p(raw_opening_range["volume"] / 1e6),
+            }
+        else:
+            # Not enough data - use zeros
+            opening_range = {col: 0.0 for col in ohlcv_cols}
+
+        opening_range_df = pd.DataFrame([opening_range])
+
+        # Market data after opening range - select only canonical columns
+        market_after_or = market_full.iloc[opening_range_minutes:]
+
+        # Select canonical columns, filling missing with 0
+        market_selected = pd.DataFrame(index=market_after_or.index)
+        for col in market_cols:
+            if col in market_after_or.columns:
+                market_selected[col] = market_after_or[col]
+            else:
+                # Check for old column names and map them
+                if col == "net_gex" and "cumulative_net_gex" in market_after_or.columns:
+                    market_selected[col] = market_after_or["cumulative_net_gex"]
+                elif col == "net_dex" and "net_delta_flow" in market_after_or.columns:
+                    market_selected[col] = market_after_or["net_delta_flow"]
+                else:
+                    market_selected[col] = 0.0
+
+        # Convert to tensors
+        premarket_tensor = torch.tensor(premarket_df.values, dtype=torch.float32)
+        opening_range_tensor = torch.tensor(opening_range_df.values, dtype=torch.float32).squeeze(0)
+        market_tensor = torch.tensor(market_selected.values, dtype=torch.float32)
+
+        day_data.append((premarket_tensor, opening_range_tensor, market_tensor))
+        dates.append(file_date)
+
+    return day_data, dates
+
+
+# =============================================================================
 # Parallel Cache Building
 # =============================================================================
 
@@ -933,12 +1236,23 @@ def train_jepa_epoch(
     total_sigreg_loss = 0.0
     num_batches = 0
 
-    for batch_idx, (context, target) in enumerate(dataloader):
+    for batch_idx, batch in enumerate(dataloader):
         if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
             torch.compiler.cudagraph_mark_step_begin()
 
-        context = context.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
+        # Handle both 2-tuple and 4-tuple batches
+        if len(batch) == 4:
+            premarket, opening_range, context, target = batch
+            premarket = premarket.to(device, non_blocking=True)
+            opening_range = opening_range.to(device, non_blocking=True)
+            context = context.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
+        else:
+            context, target = batch
+            premarket = None
+            opening_range = None
+            context = context.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
 
         lr = warmup_cosine_schedule(
             optimizer, global_step, warmup_steps, total_steps, base_lr
@@ -948,10 +1262,22 @@ def train_jepa_epoch(
 
         if use_amp and device.type == "cuda":
             with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
-                output = model(context, target, return_loss=True)
+                output = model(
+                    x_context=context,
+                    x_target=target,
+                    x_opening_range=opening_range,
+                    x_premarket=premarket,
+                    return_loss=True,
+                )
                 loss = output["loss"]
         else:
-            output = model(context, target, return_loss=True)
+            output = model(
+                x_context=context,
+                x_target=target,
+                x_opening_range=opening_range,
+                x_premarket=premarket,
+                return_loss=True,
+            )
             loss = output["loss"]
 
         loss.backward()
@@ -995,18 +1321,41 @@ def validate_jepa(
     num_batches = 0
     all_embeddings = []
 
-    for context, target in dataloader:
+    for batch in dataloader:
         if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
             torch.compiler.cudagraph_mark_step_begin()
 
-        context = context.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
+        # Handle both 2-tuple (context, target) and 4-tuple (premarket, opening_range, context, target)
+        if len(batch) == 4:
+            premarket, opening_range, context, target = batch
+            premarket = premarket.to(device, non_blocking=True)
+            opening_range = opening_range.to(device, non_blocking=True)
+            context = context.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
+        else:
+            context, target = batch
+            context = context.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
+            premarket = None
+            opening_range = None
 
         if use_amp and device.type == "cuda":
             with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
-                output = model(context, target, return_loss=False)
+                output = model(
+                    x_context=context,
+                    x_target=target,
+                    x_opening_range=opening_range,
+                    x_premarket=premarket,
+                    return_loss=False,
+                )
         else:
-            output = model(context, target, return_loss=False)
+            output = model(
+                x_context=context,
+                x_target=target,
+                x_opening_range=opening_range,
+                x_premarket=premarket,
+                return_loss=False,
+            )
 
         pred_loss = torch.nn.functional.mse_loss(
             output["predicted_embedding"], output["target_embedding"]
@@ -1064,90 +1413,140 @@ def train_jepa(args: argparse.Namespace) -> None:
     print("=" * 70)
 
     data_dir = Path(args.data_dir)
-    stocks_dir = data_dir / "stocks"
-    options_dir = data_dir / "options"
-    oi_dir = data_dir / "oi"
-
-    pattern = args.pattern or build_file_pattern(args.underlying, args.start_date, args.end_date)
+    normalized_dir = data_dir / "training-1m-normalized" / args.underlying
 
     print(f"Data directory: {data_dir}")
+    print(f"Normalized data: {normalized_dir}")
     print(f"Underlying: {args.underlying}")
     if args.start_date:
         print(f"Start date: {args.start_date}")
     if args.end_date:
         print(f"End date: {args.end_date}")
-    print(f"File pattern: {pattern}")
 
-    if stocks_dir.exists() and options_dir.exists():
-        # Pre-build cache in parallel (much faster than sequential loading)
+    # Use normalized data (properly scaled, consistent features)
+    if normalized_dir.exists():
         print("\n" + "-" * 70)
-        print("Building Data Cache (Parallel)")
+        print("Loading Normalized Training Data")
         print("-" * 70)
 
-        build_cache_parallel(
-            stocks_dir=stocks_dir,
-            options_dir=options_dir,
-            oi_dir=oi_dir if oi_dir.exists() else None,
-            underlying=args.underlying,
-            start_date=args.start_date,
-            end_date=args.end_date,
-            workers=args.cache_workers,
-            force=args.force_rebuild_cache,
-        )
+        # Parse date range
+        start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date() if args.start_date else None
+        end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else None
 
-        print("\n" + "-" * 70)
-        print("Loading Cached Data")
-        print("-" * 70)
+        # Load normalized data
+        all_files = []
+        for month_dir in sorted(normalized_dir.iterdir()):
+            if not month_dir.is_dir():
+                continue
+            for parquet_file in sorted(month_dir.glob("*.parquet")):
+                try:
+                    month_str = month_dir.name
+                    day_str = parquet_file.stem
+                    file_date = datetime.strptime(f"{month_str}-{day_str}", "%Y-%m-%d").date()
+                    if start_date and file_date < start_date:
+                        continue
+                    if end_date and file_date > end_date:
+                        continue
+                    all_files.append((file_date, parquet_file))
+                except ValueError:
+                    continue
 
-        gex_device = "cuda" if torch.cuda.is_available() else "cpu"
+        all_files.sort(key=lambda x: x[0])
+        if args.max_files:
+            all_files = all_files[:args.max_files]
 
-        train_dataset, val_dataset, df = create_combined_dataset(
-            stocks_dir=str(stocks_dir),
-            options_dir=str(options_dir),
-            underlying=args.underlying,
-            start_date=args.start_date,
-            end_date=args.end_date,
+        # Define canonical features to use (available in all normalized files)
+        canonical_cols = [
+            "open", "high", "low", "close", "volume",
+            "atm_spread", "net_premium_flow", "implied_volatility",
+            "call_strikes_active", "put_strikes_active",
+            "atm_call_volume", "otm_call_volume",
+            "atm_put_volume", "otm_put_volume",
+            "net_gex", "net_dex",
+            "time_to_close", "sin_time", "cos_time",
+        ]
+
+        # Load and concatenate data
+        day_tensors = []
+        dates = []
+        for file_date, parquet_file in tqdm(all_files, desc="Loading normalized data", unit="day"):
+            df = pd.read_parquet(parquet_file)
+
+            # Select canonical columns, filling missing with 0
+            selected = pd.DataFrame(index=df.index)
+            for col in canonical_cols:
+                if col in df.columns:
+                    selected[col] = df[col].fillna(0)
+                else:
+                    selected[col] = 0.0
+
+            # Convert to tensor
+            tensor = torch.tensor(selected.values, dtype=torch.float32)
+            day_tensors.append(tensor)
+            dates.append(file_date)
+
+        print(f"Loaded {len(dates)} days")
+        if dates:
+            print(f"Date range: {dates[0]} to {dates[-1]}")
+            print(f"Features: {len(canonical_cols)}")
+            print(f"Candles per day: {day_tensors[0].shape[0]}")
+
+        # Validate data quality
+        all_data = torch.cat(day_tensors, dim=0)
+        print(f"\nData validation:")
+        for i, col in enumerate(canonical_cols):
+            vals = all_data[:, i]
+            zeros_pct = (vals == 0).float().mean().item() * 100
+            std = vals.std().item()
+            if zeros_pct > 50 or std < 0.001:
+                print(f"  ⚠️  {col}: {zeros_pct:.1f}% zeros, std={std:.4f}")
+
+        # Split into train/val by date
+        split_idx = int(len(dates) * args.train_split)
+        train_tensors = day_tensors[:split_idx]
+        val_tensors = day_tensors[split_idx:]
+
+        print(f"\nTrain: {split_idx} days")
+        print(f"Val: {len(dates) - split_idx} days")
+
+        # Create simple sliding window datasets (no premarket for now)
+        train_data = torch.cat(train_tensors, dim=0)
+        val_data = torch.cat(val_tensors, dim=0)
+
+        train_dataset = JEPASlidingWindowDataset(
+            train_data,
             context_len=args.context_len,
             target_len=args.target_len,
             prediction_gap=args.prediction_gap,
-            patch_size=args.patch_size,
             stride=args.stride,
-            train_split=args.train_split,
-            max_files=args.max_files,
-            device="cpu",
-            oi_dir=str(oi_dir) if oi_dir.exists() else None,
-            gex_device=gex_device,
-            include_partial_patches=args.include_partial_patches,
-            min_partial_length=args.min_partial_length,
         )
-    else:
-        print("\nUsing synthetic data (no data directory found)")
+        val_dataset = JEPASlidingWindowDataset(
+            val_data,
+            context_len=args.context_len,
+            target_len=args.target_len,
+            prediction_gap=args.prediction_gap,
+            stride=args.stride,
+        )
+    elif not normalized_dir.exists():
+        print("\nUsing synthetic data (no normalized data directory found)")
         df = create_test_dataset(num_days=30, bars_per_day=390, random_seed=args.seed)
         split_idx = int(len(df) * args.train_split)
         df_train = df.iloc[:split_idx]
         df_val = df.iloc[split_idx:]
 
-        train_dataset = InMemoryDataset.from_dataframe(
+        train_dataset = create_sliding_window_dataset(
             df_train,
             context_len=args.context_len,
             target_len=args.target_len,
             prediction_gap=args.prediction_gap,
-            patch_size=args.patch_size,
             stride=args.stride,
-            device="cpu",
-            include_partial_patches=args.include_partial_patches,
-            min_partial_length=args.min_partial_length,
         )
-        val_dataset = InMemoryDataset.from_dataframe(
+        val_dataset = create_sliding_window_dataset(
             df_val,
             context_len=args.context_len,
             target_len=args.target_len,
             prediction_gap=args.prediction_gap,
-            patch_size=args.patch_size,
             stride=args.stride,
-            include_partial_patches=args.include_partial_patches,
-            min_partial_length=args.min_partial_length,
-            device="cpu",
         )
 
     print(f"Train samples: {len(train_dataset)}")
@@ -1175,22 +1574,41 @@ def train_jepa(args: argparse.Namespace) -> None:
     print("Initializing Model")
     print("=" * 70)
 
-    sample_context, sample_target = train_dataset[0]
+    # Check dataset type and extract sample
+    sample = train_dataset[0]
+    if len(sample) == 4:
+        # JEPADatasetWithPremarket: (premarket, opening_range, context, target)
+        sample_premarket, sample_opening_range, sample_context, sample_target = sample
+        has_premarket = True
+        premarket_dim = sample_premarket.shape[-1]
+        premarket_len = sample_premarket.shape[0]
+        opening_range_dim = sample_opening_range.shape[-1]
+        print(f"Premarket: {premarket_len} candles × {premarket_dim} features")
+        print(f"Opening range: {opening_range_dim} features")
+    else:
+        # Simple dataset: (context, target)
+        sample_context, sample_target = sample
+        has_premarket = False
+        premarket_dim = 5
+        premarket_len = 4
+        opening_range_dim = 5
+
     feature_dim = sample_context.shape[-1]
     context_len = sample_context.shape[0]
     target_len = sample_target.shape[0]
-    max_seq_len = max(context_len, target_len) + 10  # Add buffer for positional embedding
-    print(f"Feature dimension: {feature_dim}")
-    print(f"Context length: {context_len}")
-    print(f"Target length: {target_len}")
+    print(f"Context: {context_len} candles × {feature_dim} features")
+    print(f"Target: {target_len} candles × {feature_dim} features")
 
     model = LeJEPA(
         input_dim=feature_dim,
+        premarket_dim=premarket_dim,
+        premarket_len=premarket_len,
+        opening_range_dim=opening_range_dim,
         d_model=args.ff_dim // 4,  # Transformer dimension (ff_dim/4 for reasonable size)
         nhead=args.num_heads,
         num_layers=args.num_layers,
         embedding_dim=args.embedding_dim,
-        max_seq_len=max_seq_len,
+        max_context_len=context_len,
         dropout=args.dropout,
         lambda_reg=args.lambda_sigreg,
         reg_type=args.reg_type,
@@ -1261,7 +1679,7 @@ def train_jepa(args: argparse.Namespace) -> None:
 
     if repr_warmup_epochs > 0:
         print(f"\n*** REPRESENTATION WARMUP: {repr_warmup_epochs} epoch(s) ***")
-        print(f"    During warmup: lambda_reg=1.0 (SIGReg only, no prediction)")
+        print(f"    During warmup: lambda_reg=100.0 (SIGReg dominates, minimal prediction)")
         print(f"    This forces the latent space to expand before prediction learning")
 
     best_val_loss = float("inf")
@@ -1269,13 +1687,13 @@ def train_jepa(args: argparse.Namespace) -> None:
 
     for epoch in range(start_epoch, args.epochs):
         # Handle representation warmup phase
-        # During warmup: lambda_reg=1.0 (only SIGReg, no prediction loss)
+        # During warmup: lambda_reg=100.0 (SIGReg dominates)
         # After warmup: restore original lambda_reg
         is_repr_warmup = epoch < repr_warmup_epochs
         if is_repr_warmup:
-            model.lambda_reg = 1.0  # 100% SIGReg
+            model.lambda_reg = 100.0  # SIGReg dominates (100x weight)
             print(f"\n{'='*70}")
-            print(f"Epoch {epoch + 1}/{args.epochs} [REPR WARMUP - SIGReg Only]")
+            print(f"Epoch {epoch + 1}/{args.epochs} [REPR WARMUP - SIGReg Dominant]")
             print("=" * 70)
         else:
             model.lambda_reg = original_lambda_reg
@@ -2574,8 +2992,8 @@ def train_entry(args: argparse.Namespace) -> None:
     print("=" * 70)
 
     data_dir = Path(args.data_dir)
-    stocks_dir = data_dir / "stocks"
-    options_dir = data_dir / "options"
+    stocks_dir = data_dir / "stocks-1m"
+    options_dir = data_dir / "options-1m"
 
     print(f"Loading combined stocks + options data")
     print(f"Stocks dir: {stocks_dir}")
@@ -3119,8 +3537,8 @@ def train_regression(args: argparse.Namespace) -> None:
     print("=" * 70)
 
     data_dir = Path(args.data_dir)
-    stocks_dir = data_dir / "stocks"
-    options_dir = data_dir / "options"
+    stocks_dir = data_dir / "stocks-1m"
+    options_dir = data_dir / "options-1m"
 
     print(f"Loading combined stocks + options data")
     print(f"Stocks dir: {stocks_dir}")
@@ -3452,8 +3870,8 @@ def train_directional(args: argparse.Namespace) -> None:
     print("=" * 70)
 
     data_dir = Path(args.data_dir)
-    stocks_dir = data_dir / "stocks"
-    options_dir = data_dir / "options"
+    stocks_dir = data_dir / "stocks-1m"
+    options_dir = data_dir / "options-1m"
     raw_dir = data_dir / "training-1m-raw" / args.underlying
 
     print(f"Loading combined stocks + options data")

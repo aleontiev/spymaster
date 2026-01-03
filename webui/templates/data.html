@@ -103,17 +103,23 @@ function dataBrowser() {
         chartData: null,
         chartLoading: false,
         chartError: null,
+        chartZoomed: false,
+        showZoomButton: true,
         charts: {},
         chartSeries: {},
         overlayVisible: {
             vwap: false,  // Cumulative VWAP hidden by default
-            rollingVwap: true,  // Rolling VWAP shown by default
+            rollingVwap: false,  // Rolling VWAP hidden by default
+            vwapUpper1: false,  // VWAP +1 std band
+            vwapLower1: false,  // VWAP -1 std band
+            vwapUpper2: false,  // VWAP +2 std band
+            vwapLower2: false,  // VWAP -2 std band
             // Zero crossing levels
-            zeroGex: true,
-            zeroDex: true,
+            zeroGex: false,  // Hidden by default
+            zeroDex: false,  // Hidden by default
             // Weighted centroids (GWS/DWS)
-            positiveGws: true,
-            negativeGws: true,
+            positiveGws: false,  // GWS hidden by default (use Volume category instead)
+            negativeGws: false,
             deltaSupport: false,  // Delta support/resistance hidden by default
             deltaResistance: false,
             // Wall levels (max exposure strikes)
@@ -121,11 +127,18 @@ function dataBrowser() {
             gammaPutWall: false,
             dexCallWall: false,
             dexPutWall: false,
-            // High/Low levels
-            premarketHigh: true,
-            premarketLow: true,
-            threeDayHigh: true,
-            threeDayLow: true,
+            // Volume levels (volume-weighted strikes)
+            mostActiveStrike: true,
+            callWeightedStrike: true,  // +WS
+            putWeightedStrike: true,   // -WS
+            maxCallStrike: false,      // MCS - hidden by default
+            maxPutStrike: false,       // MPS - hidden by default
+            pointOfControl: false,     // POC - strike with highest total volume
+            // High/Low levels (historical context - hidden by default)
+            premarketHigh: false,
+            premarketLow: false,
+            threeDayHigh: false,
+            threeDayLow: false,
         },
 
         // Pipeline node selection state
@@ -663,6 +676,10 @@ function dataBrowser() {
                 }
             } else if (this.activeTab === 'files' && this.selectedPath) {
                 params.set('file', this.selectedPath);
+                // Add extended parameter when chart modal is open
+                if (this.chartModalOpen) {
+                    params.set('extended', '1');
+                }
             } else if (this.activeTab === 'pipeline' && this.selectedPipelineNode) {
                 params.set('node', this.selectedPipelineNode);
             }
@@ -722,11 +739,16 @@ function dataBrowser() {
             // Restore files tab state
             if (this.activeTab === 'files' && params.has('file')) {
                 const filePath = params.get('file');
+                const shouldOpenChart = params.has('extended');
                 // Expand folder hierarchy and select file after tree loads
                 this.$nextTick(() => {
                     this.expandPathHierarchy(filePath);
                     const fileName = filePath.split('/').pop();
                     this.selectFile({ name: fileName, path: filePath, size: 0 });
+                    // Auto-open chart if extended parameter is present
+                    if (shouldOpenChart) {
+                        this.$nextTick(() => this.openChart());
+                    }
                 });
             }
 
@@ -1132,10 +1154,10 @@ function dataBrowser() {
             if (!file.name.endsWith('.parquet')) return false;
             const chartablePaths = [
                 'cache/raw/', '/stocks/', '/options/', '/greeks/', '/oi/',
-                '/gex_flow/', '/gex-flow-1m/', '/greeks-1m/', '/oi-day/',
+                '/gex_flow/', '/options-flow-1m/', '/greeks-1m/', '/oi-day/',
                 '/training-1m-raw/', '/training-1m-normalized/',
                 'stocks-1m/', 'options-1m/', 'greeks-1m/', 'oi-day/',
-                'training-1m-raw/', 'training-1m-normalized/', 'gex-flow-1m/',
+                'training-1m-raw/', 'training-1m-normalized/', 'options-flow-1m/',
             ];
             return chartablePaths.some(p => file.path.includes(p));
         },
@@ -1225,25 +1247,25 @@ function dataBrowser() {
                     });
                     candlestickSeries.setData(this.miniChartData.ohlcv);
 
-                    // Add gamma overlays only: 0GEX, +GWS, -GWS
+                    // Add volume overlays: 0V, +VW, -VW only
                     const data = this.miniChartData;
 
-                    // Zero GEX (gray dashed)
-                    if (data.zero_gex_level?.length > 0) {
-                        const zeroGexSeries = chart.addLineSeries({ color: '#9ca3af', lineWidth: 1, lineStyle: 2, lastValueVisible: false, priceLineVisible: false });
-                        zeroGexSeries.setData(data.zero_gex_level);
+                    // 0V - Most Active Strike (blue solid)
+                    if (data.most_active_strike?.length > 0) {
+                        const masSeries = chart.addLineSeries({ color: '#3b82f6', lineWidth: 2, lastValueVisible: false, priceLineVisible: false });
+                        masSeries.setData(data.most_active_strike);
                     }
 
-                    // +GWS (green)
-                    if (data.positive_gws?.length > 0) {
-                        const pgwsSeries = chart.addLineSeries({ color: '#4ade80', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
-                        pgwsSeries.setData(data.positive_gws);
+                    // +VW - Call Weighted Strike (green dashed)
+                    if (data.call_weighted_strike?.length > 0) {
+                        const cwsSeries = chart.addLineSeries({ color: '#22c55e', lineWidth: 2, lineStyle: 2, lastValueVisible: false, priceLineVisible: false });
+                        cwsSeries.setData(data.call_weighted_strike);
                     }
 
-                    // -GWS (red)
-                    if (data.negative_gws?.length > 0) {
-                        const ngwsSeries = chart.addLineSeries({ color: '#f87171', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
-                        ngwsSeries.setData(data.negative_gws);
+                    // -VW - Put Weighted Strike (red dashed)
+                    if (data.put_weighted_strike?.length > 0) {
+                        const pwsSeries = chart.addLineSeries({ color: '#ef4444', lineWidth: 2, lineStyle: 2, lastValueVisible: false, priceLineVisible: false });
+                        pwsSeries.setData(data.put_weighted_strike);
                     }
 
                     chart.subscribeCrosshairMove(param => {
@@ -1473,11 +1495,11 @@ function dataBrowser() {
                 tooltip.innerHTML = `
                     <div class="font-semibold text-white mb-1">Strike: $${strike.toFixed(0)}</div>
                     <div class="flex gap-3">
-                        <span class="text-emerald-400">Call: ${self.formatLargeNumber(callOI)}</span>
-                        <span class="text-red-400">Put: ${self.formatLargeNumber(putOI)}</span>
+                        <span class="text-emerald-400">Call: ${self.formatLargeNumberStyled(callOI)}</span>
+                        <span class="text-red-400">Put: ${self.formatLargeNumberStyled(putOI)}</span>
                     </div>
                     <div class="text-neutral-400 text-xs mt-1">
-                        Net: ${netOI >= 0 ? '+' : ''}${self.formatLargeNumber(netOI)} | P/C: ${pcRatio}
+                        Net: ${netOI >= 0 ? '+' : ''}${self.formatLargeNumberStyled(netOI)} | P/C: ${pcRatio}
                     </div>
                 `;
                 tooltip.classList.remove('hidden');
@@ -1493,6 +1515,11 @@ function dataBrowser() {
             this.chartLoading = true;
             this.chartError = null;
             this.chartData = null;
+
+            // Update URL to include extended parameter
+            if (!this._initializing) {
+                this.updateUrl();
+            }
 
             try {
                 const res = await fetch(`/api/chart/data?path=${encodeURIComponent(this.selectedFile.path)}`);
@@ -1520,22 +1547,52 @@ function dataBrowser() {
             this.chartSeries = {};
             this.chartModalOpen = false;
             this.chartData = null;
+            this.chartZoomed = false;
+
+            // Update URL to remove extended parameter
+            this.updateUrl();
+        },
+
+        toggleChartZoom() {
+            this.chartZoomed = !this.chartZoomed;
+            TrainingChartView.chartZoomed = this.chartZoomed;
+            // Trigger resize and x-axis update after Alpine updates the DOM
+            this.$nextTick(() => {
+                TrainingChartView.handleResize();
+                TrainingChartView.updateXAxisVisibility();
+            });
+        },
+
+        // Handle window resize - delegate to TrainingChartView
+        handleChartResize() {
+            if (!this.chartModalOpen || !this.chartData) return;
+
+            // Debounce resize events
+            if (this._resizeTimeout) clearTimeout(this._resizeTimeout);
+            this._resizeTimeout = setTimeout(() => {
+                TrainingChartView.handleResize();
+            }, 100);
         },
 
         toggleOverlay(overlayName) {
+            // Sync local state and delegate to TrainingChartView
             this.overlayVisible[overlayName] = !this.overlayVisible[overlayName];
-            const visible = this.overlayVisible[overlayName];
-            const series = this.chartSeries[overlayName];
+            TrainingChartView.overlayVisible[overlayName] = this.overlayVisible[overlayName];
+            TrainingChartView.toggleOverlay(overlayName);
+            // Toggle back since TrainingChartView.toggleOverlay toggles internally
+            TrainingChartView.overlayVisible[overlayName] = this.overlayVisible[overlayName];
+            const series = TrainingChartView.chartSeries[overlayName];
             if (series) {
-                series.applyOptions({ visible });
+                series.applyOptions({ visible: this.overlayVisible[overlayName] });
             }
         },
 
-        // Legend groups for batch toggling
+        // Legend groups for batch toggling (same as TrainingChartView)
         legendGroups: {
-            price: ['vwap', 'rollingVwap'],
+            price: ['vwap', 'rollingVwap', 'vwapUpper1', 'vwapLower1', 'vwapUpper2', 'vwapLower2', 'pointOfControl'],
             gamma: ['zeroGex', 'positiveGws', 'negativeGws', 'gammaCallWall', 'gammaPutWall'],
             delta: ['zeroDex', 'deltaSupport', 'deltaResistance', 'dexCallWall', 'dexPutWall'],
+            volume: ['mostActiveStrike', 'callWeightedStrike', 'putWeightedStrike', 'maxCallStrike', 'maxPutStrike'],
             prior: ['premarketHigh', 'premarketLow', 'threeDayHigh', 'threeDayLow'],
         },
 
@@ -1550,7 +1607,8 @@ function dataBrowser() {
             const newState = !anyVisible;
             items.forEach(name => {
                 this.overlayVisible[name] = newState;
-                const series = this.chartSeries[name];
+                TrainingChartView.overlayVisible[name] = newState;
+                const series = TrainingChartView.chartSeries[name];
                 if (series) {
                     series.applyOptions({ visible: newState });
                 }
@@ -1560,995 +1618,20 @@ function dataBrowser() {
         renderCharts() {
             if (!this.chartData || !window.LightweightCharts) return;
 
-            // Clean up existing charts
-            Object.values(this.charts).forEach(chart => {
-                if (chart && chart.remove) chart.remove();
-            });
-            this.charts = {};
-            this.chartSeries = {};
-
-            const chartOptions = {
-                layout: {
-                    background: { type: 'solid', color: '#0a0a0a' },
-                    textColor: '#9ca3af',
-                },
-                grid: {
-                    vertLines: { color: '#1f1f1f' },
-                    horzLines: { color: '#1f1f1f' },
-                },
-                crosshair: {
-                    mode: 1,  // Magnet mode - snaps to data points
-                    vertLine: {
-                        color: '#6366f1',  // Indigo - visible against dark bg
-                        width: 1,
-                        style: 0,  // Solid line
-                        visible: true,
-                        labelVisible: true,
-                    },
-                    horzLine: {
-                        color: '#6366f180',  // Semi-transparent
-                        width: 1,
-                        style: 2,  // Dashed
-                        visible: true,
-                        labelVisible: true,
-                    },
-                },
-                timeScale: {
-                    borderColor: '#333',
-                    timeVisible: true,
-                    secondsVisible: false,
-                    fixLeftEdge: true,
-                    fixRightEdge: true,
-                },
-                // Use left price scale on ALL charts for perfect x-axis alignment
-                leftPriceScale: {
-                    visible: true,
-                    borderColor: '#333',
-                    minimumWidth: 70,
-                },
-                rightPriceScale: {
-                    visible: false,
-                },
-            };
-
-            const data = this.chartData;
-            const chartType = data.chart_type || 'ohlcv';
-            const self = this;
-
-            // Main chart - OHLCV
-            const mainContainer = document.getElementById('main-chart');
-            if (mainContainer && (data.ohlcv?.length > 0 || data.price?.length > 0)) {
-                mainContainer.innerHTML = '';
-                const mainChart = LightweightCharts.createChart(mainContainer, {
-                    ...chartOptions,
-                    height: 400,
-                    width: mainContainer.clientWidth,
-                });
-                this.charts.main = mainChart;
-
-                if (data.ohlcv?.length > 0) {
-                    const candlestickSeries = mainChart.addCandlestickSeries({
-                        upColor: '#26a69a',
-                        downColor: '#ef5350',
-                        borderVisible: false,
-                        wickUpColor: '#26a69a',
-                        wickDownColor: '#ef5350',
-                        title: '',
-                        priceLineVisible: false,
-                        lastValueVisible: false,
-                        priceScaleId: 'left',
-                    });
-                    candlestickSeries.setData(data.ohlcv);
-                    this.chartSeries.ohlcv = candlestickSeries;
-
-                    // VWAP overlay - no horizontal price line, keep label
-                    if (data.vwap?.length > 0) {
-                        const vwapSeries = mainChart.addLineSeries({
-                            color: '#eab308',
-                            lineWidth: 1,
-                            title: '',
-                            visible: this.overlayVisible.vwap,
-                            priceLineVisible: false,
-                            lastValueVisible: false,
-                            priceScaleId: 'left',
-                        });
-                        vwapSeries.setData(data.vwap);
-                        this.chartSeries.vwap = vwapSeries;
-                    }
-
-                    // Rolling VWAP overlay - toggleable
-                    if (data.rolling_vwap?.length > 0) {
-                        const rollingVwapSeries = mainChart.addLineSeries({
-                            color: '#06b6d4',
-                            lineWidth: 1,
-                            title: '',
-                            visible: this.overlayVisible.rollingVwap,
-                            priceLineVisible: false,
-                            lastValueVisible: false,
-                            priceScaleId: 'left',
-                        });
-                        rollingVwapSeries.setData(data.rolling_vwap);
-                        this.chartSeries.rollingVwap = rollingVwapSeries;
-                    }
-
-                    // Training raw specific overlays
-                    if (chartType === 'training_raw') {
-                        // Zero GEX level - no horizontal price line
-                        if (data.zero_gex_level?.length > 0) {
-                            const zeroGexSeries = mainChart.addLineSeries({
-                                color: '#9ca3af',
-                                lineWidth: 2,
-                                lineStyle: 2, // Dashed
-                                title: '',
-                                visible: this.overlayVisible.zeroGex,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            zeroGexSeries.setData(data.zero_gex_level);
-                            this.chartSeries.zeroGex = zeroGexSeries;
-                        }
-
-                        // Zero DEX level - no horizontal price line
-                        if (data.zero_dex_level?.length > 0) {
-                            const zeroDexSeries = mainChart.addLineSeries({
-                                color: '#f97316',
-                                lineWidth: 2,
-                                lineStyle: 2,
-                                title: '',
-                                visible: this.overlayVisible.zeroDex,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            zeroDexSeries.setData(data.zero_dex_level);
-                            this.chartSeries.zeroDex = zeroDexSeries;
-                        }
-
-                        // GWS (Gamma Weighted Strike) - centroids
-                        // Positive GWS - green (stabilizing anchor)
-                        if (data.positive_gws?.length > 0) {
-                            const posGwsSeries = mainChart.addLineSeries({
-                                color: '#4ade80',  // green-400
-                                lineWidth: 2,
-                                title: '',
-                                visible: this.overlayVisible.positiveGws,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            posGwsSeries.setData(data.positive_gws);
-                            this.chartSeries.positiveGws = posGwsSeries;
-                        }
-
-                        // Negative GWS - red (volatility anchor)
-                        if (data.negative_gws?.length > 0) {
-                            const negGwsSeries = mainChart.addLineSeries({
-                                color: '#f87171',  // red-400
-                                lineWidth: 2,
-                                title: '',
-                                visible: this.overlayVisible.negativeGws,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            negGwsSeries.setData(data.negative_gws);
-                            this.chartSeries.negativeGws = negGwsSeries;
-                        }
-
-                        // Delta Support/Resistance - position-based centroids
-                        // Delta Support - lime (below spot)
-                        if (data.delta_support?.length > 0) {
-                            const deltaSupportSeries = mainChart.addLineSeries({
-                                color: '#a3e635',  // lime-400
-                                lineWidth: 2,
-                                lineStyle: 2,  // Dashed
-                                title: '',
-                                visible: this.overlayVisible.deltaSupport,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            deltaSupportSeries.setData(data.delta_support);
-                            this.chartSeries.deltaSupport = deltaSupportSeries;
-                        }
-
-                        // Delta Resistance - pink (above spot)
-                        if (data.delta_resistance?.length > 0) {
-                            const deltaResistanceSeries = mainChart.addLineSeries({
-                                color: '#f472b6',  // pink-400
-                                lineWidth: 2,
-                                lineStyle: 2,  // Dashed
-                                title: '',
-                                visible: this.overlayVisible.deltaResistance,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            deltaResistanceSeries.setData(data.delta_resistance);
-                            this.chartSeries.deltaResistance = deltaResistanceSeries;
-                        }
-
-                        // Wall Levels (max exposure strikes)
-                        // Gamma Call Wall - light green (price magnet)
-                        if (data.gamma_call_wall?.length > 0) {
-                            const gammaCallWallSeries = mainChart.addLineSeries({
-                                color: '#86efac',  // green-300
-                                lineWidth: 1,
-                                lineStyle: 1,  // Dotted
-                                title: '',
-                                visible: this.overlayVisible.gammaCallWall,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            gammaCallWallSeries.setData(data.gamma_call_wall);
-                            this.chartSeries.gammaCallWall = gammaCallWallSeries;
-                        }
-
-                        // Gamma Put Wall - light red (trap door)
-                        if (data.gamma_put_wall?.length > 0) {
-                            const gammaPutWallSeries = mainChart.addLineSeries({
-                                color: '#fca5a5',  // red-300
-                                lineWidth: 1,
-                                lineStyle: 1,  // Dotted
-                                title: '',
-                                visible: this.overlayVisible.gammaPutWall,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            gammaPutWallSeries.setData(data.gamma_put_wall);
-                            this.chartSeries.gammaPutWall = gammaPutWallSeries;
-                        }
-
-                        // DEX Call Wall - light lime (dealer ceiling)
-                        if (data.dex_call_wall?.length > 0) {
-                            const dexCallWallSeries = mainChart.addLineSeries({
-                                color: '#bef264',  // lime-300
-                                lineWidth: 1,
-                                lineStyle: 1,  // Dotted
-                                title: '',
-                                visible: this.overlayVisible.dexCallWall,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            dexCallWallSeries.setData(data.dex_call_wall);
-                            this.chartSeries.dexCallWall = dexCallWallSeries;
-                        }
-
-                        // DEX Put Wall - light pink (dealer floor)
-                        if (data.dex_put_wall?.length > 0) {
-                            const dexPutWallSeries = mainChart.addLineSeries({
-                                color: '#f9a8d4',  // pink-300
-                                lineWidth: 1,
-                                lineStyle: 1,  // Dotted
-                                title: '',
-                                visible: this.overlayVisible.dexPutWall,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            dexPutWallSeries.setData(data.dex_put_wall);
-                            this.chartSeries.dexPutWall = dexPutWallSeries;
-                        }
-
-                        // Premarket High line (horizontal) - emerald
-                        if (data.premarket_high && this.overlayVisible.premarketHigh) {
-                            const pmHighSeries = mainChart.addLineSeries({
-                                color: '#34d399',  // emerald-400
-                                lineWidth: 1,
-                                lineStyle: 2, // Dashed
-                                title: '',
-                                visible: true,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            // Create a horizontal line by repeating the value for first and last time
-                            const times = data.ohlcv.map(d => d.time);
-                            pmHighSeries.setData([
-                                { time: times[0], value: data.premarket_high },
-                                { time: times[times.length - 1], value: data.premarket_high }
-                            ]);
-                            this.chartSeries.premarketHigh = pmHighSeries;
-                        }
-
-                        // Premarket Low line (horizontal) - rose
-                        if (data.premarket_low && this.overlayVisible.premarketLow) {
-                            const pmLowSeries = mainChart.addLineSeries({
-                                color: '#fb7185',  // rose-400
-                                lineWidth: 1,
-                                lineStyle: 2, // Dashed
-                                title: '',
-                                visible: true,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            const times = data.ohlcv.map(d => d.time);
-                            pmLowSeries.setData([
-                                { time: times[0], value: data.premarket_low },
-                                { time: times[times.length - 1], value: data.premarket_low }
-                            ]);
-                            this.chartSeries.premarketLow = pmLowSeries;
-                        }
-
-                        // 3-Day High line (horizontal) - emerald darker
-                        if (data.three_day_high && this.overlayVisible.threeDayHigh) {
-                            const tdHighSeries = mainChart.addLineSeries({
-                                color: '#10b981',  // emerald-500
-                                lineWidth: 1,
-                                lineStyle: 2, // Dashed
-                                title: '',
-                                visible: true,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            const times = data.ohlcv.map(d => d.time);
-                            tdHighSeries.setData([
-                                { time: times[0], value: data.three_day_high },
-                                { time: times[times.length - 1], value: data.three_day_high }
-                            ]);
-                            this.chartSeries.threeDayHigh = tdHighSeries;
-                        }
-
-                        // 3-Day Low line (horizontal) - rose darker
-                        if (data.three_day_low && this.overlayVisible.threeDayLow) {
-                            const tdLowSeries = mainChart.addLineSeries({
-                                color: '#f43f5e',  // rose-500
-                                lineWidth: 1,
-                                lineStyle: 2, // Dashed
-                                title: '',
-                                visible: true,
-                                priceLineVisible: false,
-                                lastValueVisible: false,
-                                priceScaleId: 'left',
-                            });
-                            const times = data.ohlcv.map(d => d.time);
-                            tdLowSeries.setData([
-                                { time: times[0], value: data.three_day_low },
-                                { time: times[times.length - 1], value: data.three_day_low }
-                            ]);
-                            this.chartSeries.threeDayLow = tdLowSeries;
-                        }
-                    }
-                } else if (data.price?.length > 0) {
-                    const priceSeries = mainChart.addLineSeries({
-                        color: '#3b82f6',
-                        lineWidth: 2,
-                        title: '',
-                        priceLineVisible: false,
-                        lastValueVisible: false,
-                        priceScaleId: 'left',
-                    });
-                    priceSeries.setData(data.price);
-                    this.chartSeries.price = priceSeries;
-                }
-
-                mainChart.timeScale().fitContent();
-            }
-
-            // Get the main chart's visible range to sync all subcharts
-            const mainVisibleRange = this.charts.main?.timeScale().getVisibleRange();
-
-            // Volume chart
-            const volumeContainer = document.getElementById('volume-chart');
-            if (volumeContainer && data.volume?.length > 0) {
-                volumeContainer.innerHTML = '';
-                const volumeChart = LightweightCharts.createChart(volumeContainer, {
-                    ...chartOptions,
-                    height: 100,
-                    width: volumeContainer.clientWidth,
-                });
-                this.charts.volume = volumeChart;
-
-                const volumeSeries = volumeChart.addHistogramSeries({
-                    priceFormat: { type: 'volume' },
-                    priceScaleId: 'left',
-                    lastValueVisible: false,
-                    priceLineVisible: false,
-                });
-                volumeSeries.setData(data.volume);
-                this.chartSeries.volume = volumeSeries;
-
-                if (mainVisibleRange) volumeChart.timeScale().setVisibleRange(mainVisibleRange);
-                else volumeChart.timeScale().fitContent();
-            }
-
-            // GEX Regime Strength chart (histogram with green/red bars)
-            // Uses gex_regime_strength if available, falls back to total_gex for old data
-            const totalGexContainer = document.getElementById('total-gex-chart');
-            const gexData = data.gex_regime_strength || data.total_gex;
-            if (totalGexContainer && gexData?.length > 0) {
-                totalGexContainer.innerHTML = '';
-                const totalGexChart = LightweightCharts.createChart(totalGexContainer, {
-                    ...chartOptions,
-                    height: 120,
-                    width: totalGexContainer.clientWidth,
-                    localization: {
-                        priceFormatter: (price) => {
-                            // Format as billions/millions
-                            const abs = Math.abs(price);
-                            if (abs >= 1e9) return (price / 1e9).toFixed(1) + 'B';
-                            if (abs >= 1e6) return (price / 1e6).toFixed(0) + 'M';
-                            if (abs >= 1e3) return (price / 1e3).toFixed(0) + 'K';
-                            return price.toFixed(0);
-                        }
-                    },
-                });
-                this.charts.totalGex = totalGexChart;
-
-                const totalGexSeries = totalGexChart.addHistogramSeries({
-                    priceScaleId: 'left',
-                    base: 0,
-                    lastValueVisible: false,
-                    priceLineVisible: false,
-                });
-                totalGexSeries.setData(gexData);
-                this.chartSeries.totalGex = totalGexSeries;
-
-                if (mainVisibleRange) totalGexChart.timeScale().setVisibleRange(mainVisibleRange);
-                else totalGexChart.timeScale().fitContent();
-            }
-
-            // Options flow chart (call/put)
-            const flowContainer = document.getElementById('flow-chart');
-            if (flowContainer && (data.call_volume?.length > 0 || data.net_gamma_flow?.length > 0)) {
-                flowContainer.innerHTML = '';
-                const flowChart = LightweightCharts.createChart(flowContainer, {
-                    ...chartOptions,
-                    height: 120,
-                    width: flowContainer.clientWidth,
-                    localization: { priceFormatter: (price) => this.formatLargeNumber(Math.abs(price)) },
-                });
-                this.charts.flow = flowChart;
-
-                if (data.call_volume?.length > 0) {
-                    const callSeries = flowChart.addHistogramSeries({
-                        color: '#26a69a',
-                        priceScaleId: 'left',
-                        priceFormat: { type: 'volume' },
-                        lastValueVisible: false,
-                        priceLineVisible: false,
-                    });
-                    callSeries.setData(data.call_volume);
-                    this.chartSeries.flow = callSeries;  // Store for crosshair sync
-
-                    const putSeries = flowChart.addHistogramSeries({
-                        color: '#ef5350',
-                        priceScaleId: 'left',
-                        priceFormat: { type: 'volume' },
-                        lastValueVisible: false,
-                        priceLineVisible: false,
-                    });
-                    putSeries.setData(data.put_volume);
-
-                    // Aggression overlay (fainter bars showing buy vs sell pressure)
-                    if (data.call_aggression?.length > 0) {
-                        const callAggrSeries = flowChart.addHistogramSeries({
-                            priceScaleId: 'left',
-                            priceFormat: { type: 'volume' },
-                            lastValueVisible: false,
-                            priceLineVisible: false,
-                        });
-                        callAggrSeries.setData(data.call_aggression);
-
-                        const putAggrSeries = flowChart.addHistogramSeries({
-                            priceScaleId: 'left',
-                            priceFormat: { type: 'volume' },
-                            lastValueVisible: false,
-                            priceLineVisible: false,
-                        });
-                        putAggrSeries.setData(data.put_aggression);
-                    }
-                } else if (data.net_gamma_flow?.length > 0) {
-                    const gexFlowSeries = flowChart.addHistogramSeries({
-                        priceScaleId: 'left',
-                        lastValueVisible: false,
-                        priceLineVisible: false,
-                    });
-                    gexFlowSeries.setData(data.net_gamma_flow.map(d => ({
-                        ...d,
-                        color: d.value >= 0 ? '#22c55e' : '#ef4444',
-                    })));
-                    this.chartSeries.flow = gexFlowSeries;  // Store for crosshair sync
-                }
-
-                if (mainVisibleRange) flowChart.timeScale().setVisibleRange(mainVisibleRange);
-                else flowChart.timeScale().fitContent();
-            }
-
-            // Net GEX/DEX Exposure chart
-            const netExposureContainer = document.getElementById('net-exposure-chart');
-            if (netExposureContainer && (data.net_gex?.length > 0 || data.net_dex?.length > 0)) {
-                netExposureContainer.innerHTML = '';
-                const netExposureChart = LightweightCharts.createChart(netExposureContainer, {
-                    ...chartOptions,
-                    height: 100,
-                    width: netExposureContainer.clientWidth,
-                    localization: {
-                        priceFormatter: (price) => {
-                            const abs = Math.abs(price);
-                            if (abs >= 1e9) return (price / 1e9).toFixed(1) + 'B';
-                            if (abs >= 1e6) return (price / 1e6).toFixed(1) + 'M';
-                            if (abs >= 1e3) return (price / 1e3).toFixed(1) + 'K';
-                            return price.toFixed(0);
-                        }
-                    },
-                });
-                this.charts.netExposure = netExposureChart;
-
-                // Net GEX line (purple)
-                if (data.net_gex?.length > 0) {
-                    const netGexSeries = netExposureChart.addLineSeries({
-                        color: '#a855f7',  // Purple
-                        lineWidth: 2,
-                        priceScaleId: 'left',
-                        lastValueVisible: false,
-                        priceLineVisible: false,
-                    });
-                    netGexSeries.setData(data.net_gex);
-                    this.chartSeries.netGex = netGexSeries;
-                }
-
-                // Net DEX line (orange)
-                if (data.net_dex?.length > 0) {
-                    const netDexSeries = netExposureChart.addLineSeries({
-                        color: '#f97316',  // Orange
-                        lineWidth: 2,
-                        priceScaleId: 'left',
-                        lastValueVisible: false,
-                        priceLineVisible: false,
-                    });
-                    netDexSeries.setData(data.net_dex);
-                    this.chartSeries.netDex = netDexSeries;
-                }
-
-                // Add zero line
-                const zeroLine = netExposureChart.addLineSeries({
-                    color: '#6b7280',
-                    lineWidth: 1,
-                    lineStyle: 2,  // Dashed
-                    priceScaleId: 'left',
-                    lastValueVisible: false,
-                    priceLineVisible: false,
-                });
-                // Create zero line data from net_gex or net_dex timestamps
-                const timestamps = data.net_gex?.length > 0 ? data.net_gex : data.net_dex;
-                zeroLine.setData(timestamps.map(d => ({ time: d.time, value: 0 })));
-
-                if (mainVisibleRange) netExposureChart.timeScale().setVisibleRange(mainVisibleRange);
-                else netExposureChart.timeScale().fitContent();
-            }
-
-            // IV chart
-            const ivContainer = document.getElementById('iv-chart');
-            if (ivContainer && data.iv?.length > 0) {
-                ivContainer.innerHTML = '';
-                const ivChart = LightweightCharts.createChart(ivContainer, {
-                    ...chartOptions,
-                    height: 100,
-                    width: ivContainer.clientWidth,
-                });
-                this.charts.iv = ivChart;
-
-                const ivSeries = ivChart.addLineSeries({
-                    color: '#a855f7',
-                    lineWidth: 2,
-                    title: '',
-                    priceLineVisible: false,
-                    lastValueVisible: false,
-                    priceScaleId: 'left',
-                });
-                ivSeries.setData(data.iv);
-                this.chartSeries.iv = ivSeries;  // Store for crosshair sync
-
-                if (mainVisibleRange) ivChart.timeScale().setVisibleRange(mainVisibleRange);
-                else ivChart.timeScale().fitContent();
-            }
-
-            // Market Velocity chart (hedging force histogram)
-            const velocityContainer = document.getElementById('velocity-chart');
-            if (velocityContainer && data.market_velocity?.length > 0) {
-                velocityContainer.innerHTML = '';
-                const velocityChart = LightweightCharts.createChart(velocityContainer, {
-                    ...chartOptions,
-                    height: 100,
-                    width: velocityContainer.clientWidth,
-                });
-                this.charts.velocity = velocityChart;
-
-                // Create histogram series (positive = green/bullish, negative = red/bearish)
-                const velocitySeries = velocityChart.addHistogramSeries({
-                    priceFormat: { type: 'volume' },
-                    priceScaleId: 'left',
-                    priceLineVisible: false,
-                    lastValueVisible: false,
-                });
-
-                // Build lookup maps for call/put volume and OHLC by time
-                const callVolByTime = new Map();
-                const putVolByTime = new Map();
-                const ohlcByTime = new Map();
-                if (data.call_volume) {
-                    data.call_volume.forEach(d => callVolByTime.set(d.time, Math.abs(d.value)));
-                }
-                if (data.put_volume) {
-                    data.put_volume.forEach(d => putVolByTime.set(d.time, Math.abs(d.value)));
-                }
-                if (data.ohlcv) {
-                    data.ohlcv.forEach(d => ohlcByTime.set(d.time, d));
-                }
-
-                // Color bars based on sign, with velocity discrepancy detection
-                // Discrepancy requires ALL THREE conditions:
-                // - Velocity direction
-                // - Price direction (candle color)
-                // - Options flow direction (put:call ratio)
-                const coloredData = data.market_velocity.map(d => {
-                    const callVol = callVolByTime.get(d.time) || 0;
-                    const putVol = putVolByTime.get(d.time) || 0;
-                    const ohlc = ohlcByTime.get(d.time);
-                    const priceDown = ohlc ? ohlc.close < ohlc.open : false;
-                    const priceUp = ohlc ? ohlc.close > ohlc.open : false;
-
-                    let color;
-                    if (d.value >= 0) {
-                        // Gold discrepancy: positive velocity + red candle + bearish flow
-                        if (priceDown && putVol > callVol) {
-                            color = '#fbbf24';  // GOLD (amber-400)
-                        } else {
-                            color = '#22c55e';  // green-500 - normal bullish
-                        }
-                    } else {
-                        // Pink discrepancy: negative velocity + green candle + bullish flow
-                        if (priceUp && callVol > putVol) {
-                            color = '#f472b6';  // PINK (pink-400)
-                        } else {
-                            color = '#ef4444';  // red-500 - normal bearish
-                        }
-                    }
-
-                    return { time: d.time, value: d.value, color };
-                });
-                velocitySeries.setData(coloredData);
-                this.chartSeries.velocity = velocitySeries;  // Store for crosshair sync
-
-                if (mainVisibleRange) velocityChart.timeScale().setVisibleRange(mainVisibleRange);
-                else velocityChart.timeScale().fitContent();
-            }
-
-            // Sync all chart time scales bidirectionally
-            const allCharts = Object.values(this.charts).filter(c => c);
-            if (allCharts.length > 1) {
-                let isSyncing = false;
-
-                // Force initial sync: use main chart's visible range for all charts
-                const mainChart = this.charts.main;
-                if (mainChart) {
-                    const mainRange = mainChart.timeScale().getVisibleRange();
-                    if (mainRange) {
-                        isSyncing = true;
-                        allCharts.forEach(chart => {
-                            if (chart !== mainChart) {
-                                chart.timeScale().setVisibleRange(mainRange);
-                            }
-                        });
-                        isSyncing = false;
-                    }
-                }
-
-                // Subscribe to ongoing changes
-                allCharts.forEach(chart => {
-                    chart.timeScale().subscribeVisibleTimeRangeChange(range => {
-                        if (isSyncing || !range) return;
-                        isSyncing = true;
-                        allCharts.forEach(otherChart => {
-                            if (otherChart !== chart) {
-                                otherChart.timeScale().setVisibleRange(range);
-                            }
-                        });
-                        isSyncing = false;
-                    });
-                });
-            }
-
-            // Unified crosshair tooltip handler for all charts
-            const tooltip = document.getElementById('chart-tooltip');
-            if (tooltip) {
-                const self = this;
-
-                // Helper to build tooltip content for current crosshair time
-                const buildTooltipContent = (time) => {
-                    let html = '';
-
-                    // Time header
-                    const timeDate = new Date(time * 1000);
-                    const timeStr = timeDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                    html += `<div class="text-gray-400 text-[10px] mb-2">${timeStr}</div>`;
-
-                    // OHLCV section
-                    const ohlcvPoint = data.ohlcv?.find(d => d.time === time);
-                    if (ohlcvPoint) {
-                        const change = ohlcvPoint.close - ohlcvPoint.open;
-                        const changeColor = change >= 0 ? 'text-green-400' : 'text-red-400';
-                        const changePct = ((change / ohlcvPoint.open) * 100).toFixed(2);
-                        html += `<div class="mb-2 pb-2 border-b border-neutral-600">`;
-                        html += `<div class="flex justify-between gap-4"><span class="text-gray-400">O</span><span class="text-white font-mono">${ohlcvPoint.open.toFixed(2)}</span></div>`;
-                        html += `<div class="flex justify-between gap-4"><span class="text-gray-400">H</span><span class="text-white font-mono">${ohlcvPoint.high.toFixed(2)}</span></div>`;
-                        html += `<div class="flex justify-between gap-4"><span class="text-gray-400">L</span><span class="text-white font-mono">${ohlcvPoint.low.toFixed(2)}</span></div>`;
-                        html += `<div class="flex justify-between gap-4"><span class="text-gray-400">C</span><span class="${changeColor} font-mono">${ohlcvPoint.close.toFixed(2)} (${change >= 0 ? '+' : ''}${changePct}%)</span></div>`;
-                        html += `</div>`;
-                    }
-
-                    // Volume
-                    const volPoint = data.volume?.find(d => d.time === time);
-                    if (volPoint) {
-                        html += `<div class="flex justify-between gap-4"><span class="text-gray-400">Volume</span><span class="text-white font-mono">${self.formatLargeNumber(volPoint.value)}</span></div>`;
-                    }
-
-                    // Overlays section (dynamic levels only - not PM/3D static levels)
-                    const overlays = [];
-
-                    // VWAP (only if visible)
-                    if (self.overlayVisible.vwap) {
-                        const vwapPoint = data.vwap?.find(d => d.time === time);
-                        if (vwapPoint?.value) overlays.push({ name: 'VWAP', value: vwapPoint.value.toFixed(2), color: '#eab308' });
-                    }
-
-                    // Rolling VWAP
-                    const rvwapPoint = data.rolling_vwap?.find(d => d.time === time);
-                    if (rvwapPoint?.value) overlays.push({ name: 'R-VWAP', value: rvwapPoint.value.toFixed(2), color: '#06b6d4' });
-
-                    // Zero GEX
-                    if (self.overlayVisible.zeroGex) {
-                        const zgPoint = data.zero_gex_level?.find(d => d.time === time);
-                        if (zgPoint?.value) overlays.push({ name: 'Zero GEX', value: zgPoint.value.toFixed(2), color: '#9ca3af' });
-                    }
-
-                    // Zero DEX
-                    if (self.overlayVisible.zeroDex) {
-                        const zdPoint = data.zero_dex_level?.find(d => d.time === time);
-                        if (zdPoint?.value) overlays.push({ name: 'Zero DEX', value: zdPoint.value.toFixed(2), color: '#f97316' });
-                    }
-
-                    // GWS (Gamma Weighted Strike) - centroids
-                    if (self.overlayVisible.positiveGws) {
-                        const pgPoint = data.positive_gws?.find(d => d.time === time);
-                        if (pgPoint?.value) overlays.push({ name: '+GWS', value: pgPoint.value.toFixed(2), color: '#4ade80' });
-                    }
-                    if (self.overlayVisible.negativeGws) {
-                        const ngPoint = data.negative_gws?.find(d => d.time === time);
-                        if (ngPoint?.value) overlays.push({ name: '-GWS', value: ngPoint.value.toFixed(2), color: '#f87171' });
-                    }
-                    // Delta Support/Resistance
-                    if (self.overlayVisible.deltaSupport) {
-                        const dsPoint = data.delta_support?.find(d => d.time === time);
-                        if (dsPoint?.value) overlays.push({ name: 'ΔSup', value: dsPoint.value.toFixed(2), color: '#a3e635' });
-                    }
-                    if (self.overlayVisible.deltaResistance) {
-                        const drPoint = data.delta_resistance?.find(d => d.time === time);
-                        if (drPoint?.value) overlays.push({ name: 'ΔRes', value: drPoint.value.toFixed(2), color: '#f472b6' });
-                    }
-
-                    // Wall levels (max exposure strikes)
-                    if (self.overlayVisible.gammaCallWall) {
-                        const gcwPoint = data.gamma_call_wall?.find(d => d.time === time);
-                        if (gcwPoint?.value) overlays.push({ name: '+Γ', value: gcwPoint.value.toFixed(2), color: '#86efac' });
-                    }
-                    if (self.overlayVisible.gammaPutWall) {
-                        const gpwPoint = data.gamma_put_wall?.find(d => d.time === time);
-                        if (gpwPoint?.value) overlays.push({ name: '-Γ', value: gpwPoint.value.toFixed(2), color: '#fca5a5' });
-                    }
-                    if (self.overlayVisible.dexCallWall) {
-                        const dcwPoint = data.dex_call_wall?.find(d => d.time === time);
-                        if (dcwPoint?.value) overlays.push({ name: '+Δ', value: dcwPoint.value.toFixed(2), color: '#bef264' });
-                    }
-                    if (self.overlayVisible.dexPutWall) {
-                        const dpwPoint = data.dex_put_wall?.find(d => d.time === time);
-                        if (dpwPoint?.value) overlays.push({ name: '-Δ', value: dpwPoint.value.toFixed(2), color: '#f9a8d4' });
-                    }
-
-                    // Note: PM High/Low and 3D High/Low are static horizontal lines, not shown in tooltip
-
-                    if (overlays.length > 0) {
-                        html += `<div class="mt-2 pt-2 border-t border-neutral-600 space-y-0.5">`;
-                        for (const o of overlays) {
-                            html += `<div class="flex justify-between gap-4">`;
-                            html += `<span class="flex items-center gap-1"><span class="w-2 h-0.5 rounded" style="background:${o.color}"></span><span class="text-gray-400">${o.name}</span></span>`;
-                            html += `<span class="text-white font-mono">${o.value}</span>`;
-                            html += `</div>`;
-                        }
-                        html += `</div>`;
-                    }
-
-                    // Net GEX (gamma exposure)
-                    const gexPoint = data.net_gex?.find(d => d.time === time);
-                    if (gexPoint) {
-                        const gexColor = gexPoint.value >= 0 ? 'text-green-400' : 'text-red-400';
-                        html += `<div class="flex justify-between gap-4 mt-1"><span class="text-gray-400">Net GEX</span><span class="${gexColor} font-mono">${self.formatLargeNumber(gexPoint.value)}</span></div>`;
-                    }
-
-                    // Options flow
-                    const callPoint = data.call_volume?.find(d => d.time === time);
-                    const putPoint = data.put_volume?.find(d => d.time === time);
-                    if (callPoint || putPoint) {
-                        const callVol = callPoint?.value || 0;
-                        const putVol = Math.abs(putPoint?.value || 0);
-                        const netVol = callVol - putVol;
-                        const netColor = netVol >= 0 ? 'text-green-400' : 'text-red-400';
-                        html += `<div class="mt-1 pt-1 border-t border-neutral-700">`;
-                        html += `<div class="flex justify-between gap-4"><span class="text-green-400">Calls</span><span class="text-white font-mono">${self.formatLargeNumber(callVol)}</span></div>`;
-                        html += `<div class="flex justify-between gap-4"><span class="text-red-400">Puts</span><span class="text-white font-mono">${self.formatLargeNumber(putVol)}</span></div>`;
-                        html += `<div class="flex justify-between gap-4"><span class="text-gray-400">Net</span><span class="${netColor} font-mono">${netVol >= 0 ? '+' : ''}${self.formatLargeNumber(netVol)}</span></div>`;
-                        html += `</div>`;
-                    }
-
-                    // Trade aggression (buy vs sell pressure)
-                    const callAggr = data.call_aggression?.find(d => d.time === time);
-                    const putAggr = data.put_aggression?.find(d => d.time === time);
-                    if (callAggr || putAggr) {
-                        const callAggrVal = callAggr?.value || 0;
-                        const putAggrVal = putAggr?.value || 0;
-                        const callAggrColor = callAggrVal >= 0 ? 'text-green-400' : 'text-red-400';
-                        const putAggrColor = putAggrVal <= 0 ? 'text-green-400' : 'text-red-400';  // Flipped for puts
-                        html += `<div class="mt-1 pt-1 border-t border-neutral-700 text-xs">`;
-                        html += `<div class="text-gray-500 mb-0.5">Aggression (Buy-Sell)</div>`;
-                        html += `<div class="flex justify-between gap-4"><span class="text-gray-400">Calls</span><span class="${callAggrColor} font-mono">${callAggrVal >= 0 ? '+' : ''}${self.formatLargeNumber(callAggrVal)}</span></div>`;
-                        html += `<div class="flex justify-between gap-4"><span class="text-gray-400">Puts</span><span class="${putAggrColor} font-mono">${-putAggrVal >= 0 ? '+' : ''}${self.formatLargeNumber(-putAggrVal)}</span></div>`;
-                        html += `</div>`;
-                    }
-
-                    // IV
-                    const ivPoint = data.iv?.find(d => d.time === time);
-                    if (ivPoint) {
-                        html += `<div class="flex justify-between gap-4 mt-1"><span class="text-purple-400">IV</span><span class="text-white font-mono">${ivPoint.value.toFixed(1)}%</span></div>`;
-                    }
-
-                    // Net GEX
-                    const netGexPoint = data.net_gex?.find(d => d.time === time);
-                    if (netGexPoint) {
-                        const gexColor = netGexPoint.value >= 0 ? 'text-green-500' : 'text-red-500';
-                        const gexSign = netGexPoint.value >= 0 ? '+' : '';
-                        html += `<div class="flex justify-between gap-4 mt-1"><span class="text-purple-400">Net GEX</span><span class="${gexColor} font-mono">${gexSign}${self.formatLargeNumber(netGexPoint.value)}</span></div>`;
-                    }
-
-                    // Net DEX
-                    const netDexPoint = data.net_dex?.find(d => d.time === time);
-                    if (netDexPoint) {
-                        const dexColor = netDexPoint.value >= 0 ? 'text-green-500' : 'text-red-500';
-                        const dexSign = netDexPoint.value >= 0 ? '+' : '';
-                        html += `<div class="flex justify-between gap-4 mt-1"><span class="text-orange-400">Net DEX</span><span class="${dexColor} font-mono">${dexSign}${self.formatLargeNumber(netDexPoint.value)}</span></div>`;
-                    }
-
-                    // Market Velocity
-                    const velocityPoint = data.market_velocity?.find(d => d.time === time);
-                    if (velocityPoint) {
-                        const velColor = velocityPoint.value >= 0 ? 'text-green-500' : 'text-red-500';
-                        const velSign = velocityPoint.value >= 0 ? '+' : '';
-                        html += `<div class="flex justify-between gap-4 mt-1"><span class="text-gray-400">Velocity</span><span class="${velColor} font-mono">${velSign}${self.formatLargeNumber(velocityPoint.value)}</span></div>`;
-                    }
-
-                    return html;
-                };
-
-                // Sync crosshairs across all charts - show unified vertical line
-                let isCrosshairSyncing = false;
-
-                // Map each chart key to its primary series for crosshair sync
-                const chartToSeriesKey = {
-                    main: ['ohlcv', 'price'],
-                    volume: ['volume'],
-                    totalGex: ['totalGex'],
-                    flow: ['flow'],
-                    netExposure: ['netGex', 'netDex'],
-                    iv: ['iv'],
-                    velocity: ['velocity'],
-                };
-
-                // Build map: chart object -> series (using first available series for each chart)
-                const chartObjectToSeries = new Map();
-                Object.entries(self.charts).forEach(([chartKey, chart]) => {
-                    if (!chart) return;
-                    const seriesKeys = chartToSeriesKey[chartKey] || [];
-                    for (const key of seriesKeys) {
-                        if (self.chartSeries[key]) {
-                            chartObjectToSeries.set(chart, self.chartSeries[key]);
-                            break;
-                        }
-                    }
-                });
-
-                const syncCrosshair = (sourceChart, param) => {
-                    if (isCrosshairSyncing) return;
-                    isCrosshairSyncing = true;
-
-                    const time = param.time;
-
-                    allCharts.forEach(chart => {
-                        if (chart !== sourceChart) {
-                            const series = chartObjectToSeries.get(chart);
-                            if (time && series) {
-                                // Set crosshair at this time - shows vertical line
-                                chart.setCrosshairPosition(0, time, series);
-                            } else if (!time) {
-                                chart.clearCrosshairPosition();
-                            }
-                        }
-                    });
-
-                    isCrosshairSyncing = false;
-                };
-
-                // Subscribe to crosshair move on all charts - show tooltip from ANY chart
-                const chartContainerIds = {
-                    main: 'main-chart',
-                    volume: 'volume-chart',
-                    totalGex: 'total-gex-chart',
-                    flow: 'flow-chart',
-                    netExposure: 'net-exposure-chart',
-                    iv: 'iv-chart',
-                    velocity: 'velocity-chart'
-                };
-
-                // Get the chart modal container for fixed tooltip positioning
-                const chartModal = document.querySelector('.space-y-2');
-                const mainChartContainer = document.getElementById('main-chart');
-
-                allCharts.forEach((chart) => {
-                    chart.subscribeCrosshairMove((param) => {
-                        // Sync crosshairs across all charts
-                        syncCrosshair(chart, param);
-
-                        if (!param.time || param.point === undefined) {
-                            tooltip.style.opacity = '0';
-                            return;
-                        }
-
-                        // Build and display tooltip content
-                        tooltip.innerHTML = buildTooltipContent(param.time);
-
-                        // Fixed corner positioning: opposite side of cursor
-                        if (mainChartContainer) {
-                            const mainRect = mainChartContainer.getBoundingClientRect();
-                            const chartMidpoint = mainRect.left + mainRect.width / 2;
-                            const cursorX = mainRect.left + (param.point?.x || 0);
-
-                            // Position in top corner, opposite side from cursor
-                            const margin = 16;
-                            let left, top;
-
-                            if (cursorX < chartMidpoint) {
-                                // Cursor on left, tooltip on right
-                                left = mainRect.right - 270;
-                            } else {
-                                // Cursor on right, tooltip on left
-                                left = mainRect.left + margin;
-                            }
-
-                            // Always at top of main chart area
-                            top = mainRect.top + margin;
-
-                            tooltip.style.left = `${left}px`;
-                            tooltip.style.top = `${top}px`;
-                            tooltip.style.opacity = '1';
-                        }
-                    });
-                });
-
-                // Hide tooltip on mouse leave from chart area
-                const chartArea = document.querySelector('.space-y-2');
-                if (chartArea) {
-                    chartArea.addEventListener('mouseleave', () => {
-                        tooltip.style.opacity = '0';
-                        allCharts.forEach(chart => chart.clearCrosshairPosition());
-                    });
-                }
-            }
+            // Sync overlay visibility state to TrainingChartView before rendering
+            Object.assign(TrainingChartView.overlayVisible, this.overlayVisible);
+
+            // Delegate to TrainingChartView
+            TrainingChartView.render(this.chartData);
+
+            // Keep references for compatibility
+            this.charts = TrainingChartView.charts;
+            this.chartSeries = TrainingChartView.chartSeries;
         },
+
+        // NOTE: renderCharts() now delegates to TrainingChartView.render()
+        // The 1000+ lines of legacy chart rendering code has been removed
+        // All chart creation, crosshair sync, and tooltip logic is now in training-chart-view.js
 
         updateMiniTooltip(param, tooltip, chartType, series) {
             if (!param.time || !tooltip) {
@@ -2580,10 +1663,10 @@ function dataBrowser() {
                 tooltip.innerHTML = `
                     <div class="font-semibold text-gray-200">${time}</div>
                     <div class="grid grid-cols-2 gap-x-3 gap-y-0.5 mt-1">
-                        <span class="text-green-400">Calls:</span><span class="text-gray-200">${this.formatLargeNumber(callVol)}</span>
-                        <span class="text-red-400">Puts:</span><span class="text-gray-200">${this.formatLargeNumber(putVol)}</span>
+                        <span class="text-green-400">Calls:</span><span class="text-gray-200">${this.formatLargeNumberStyled(callVol)}</span>
+                        <span class="text-red-400">Puts:</span><span class="text-gray-200">${this.formatLargeNumberStyled(putVol)}</span>
                         <span class="text-gray-400">P/C:</span><span class="text-yellow-400">${ratio}</span>
-                        <span class="text-gray-400">Net:</span><span class="${callVol > putVol ? 'text-green-400' : 'text-red-400'}">${this.formatLargeNumber(callVol - putVol)}</span>
+                        <span class="text-gray-400">Net:</span><span class="${callVol > putVol ? 'text-green-400' : 'text-red-400'}">${this.formatLargeNumberStyled(callVol - putVol)}</span>
                     </div>
                 `;
             } else if (chartType === 'gex') {
@@ -2617,12 +1700,23 @@ function dataBrowser() {
         },
 
         formatLargeNumber(num) {
+            return ChartUtils.formatLargeNumber(num);
+        },
+
+        // Get brightness/opacity based on magnitude (for tooltip styling)
+        // Returns opacity value: 0.4 for small, 0.7 for medium, 1.0 for large
+        getMagnitudeBrightness(num) {
             const abs = Math.abs(num);
-            const sign = num < 0 ? '-' : '';
-            if (abs >= 1e9) return sign + (abs / 1e9).toFixed(1) + 'B';
-            if (abs >= 1e6) return sign + (abs / 1e6).toFixed(1) + 'M';
-            if (abs >= 1e3) return sign + (abs / 1e3).toFixed(1) + 'K';
-            return num.toFixed(0);
+            if (abs >= 1e9) return 1.0;      // Billions: brightest
+            if (abs >= 1e6) return 0.7;      // Millions: medium
+            return 0.4;                       // Thousands or less: dim
+        },
+
+        // Format large number with brightness styling
+        formatLargeNumberStyled(num, baseColor = 'white') {
+            const formatted = this.formatLargeNumber(num);
+            const brightness = this.getMagnitudeBrightness(num);
+            return `<span style="opacity: ${brightness}">${formatted}</span>`;
         },
 
         formatBytes(bytes) {

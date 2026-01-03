@@ -1,0 +1,104 @@
+<!-- Shared Training Charts Container -->
+<!-- Used by both /data extended view and /charts page -->
+
+<!-- Global crosshair tooltip -->
+<div id="chart-tooltip"
+     class="fixed pointer-events-none opacity-0 transition-opacity duration-150 bg-neutral-800/95 border border-neutral-600 rounded px-3 py-2 text-xs shadow-lg z-50"
+     style="min-width: 220px; max-width: 320px;">
+</div>
+
+<!-- 1. Main OHLC Chart -->
+<div class="relative" style="flex: 5 1 0%; min-height: 120px;" data-chart-row="main">
+    <div class="absolute top-1 left-1 z-10 flex items-center gap-2 pointer-events-none">
+        <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">Price</span>
+    </div>
+    <template x-if="showZoomButton !== false">
+        <div class="absolute top-1 right-1 z-10 pointer-events-auto">
+            <button @click="toggleChartZoom && toggleChartZoom()"
+                    class="p-1 rounded hover:bg-neutral-700 text-gray-400 hover:text-white transition-colors"
+                    :title="chartZoomed ? 'Restore subcharts' : 'Focus on main chart'">
+                <svg x-show="!chartZoomed" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path>
+                </svg>
+                <svg x-show="chartZoomed" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25"></path>
+                </svg>
+            </button>
+        </div>
+    </template>
+    <div id="main-chart" class="w-full h-full bg-neutral-950"></div>
+</div>
+
+<!-- 2. Volume Chart -->
+<div x-show="!chartZoomed" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="volume">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none">
+        <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">Volume</span>
+    </div>
+    <div id="volume-chart" class="w-full h-full bg-neutral-950"></div>
+</div>
+
+<!-- 3. Imbalance Chart (Stock OFI) -->
+<div x-show="!chartZoomed && chartData?.stock_ofi?.length > 0" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="imbalance">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none flex items-center gap-2">
+        <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">Imbalance</span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-green-500 rounded"></span> Buy</span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-red-500 rounded"></span> Sell</span>
+    </div>
+    <div id="market-pressure-chart" class="w-full h-full bg-neutral-950"></div>
+</div>
+
+<!-- 4. Options Flow (Call/Put Volume) -->
+<div x-show="!chartZoomed && chartData?.call_volume?.length > 0" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="flow">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none flex items-center gap-2">
+        <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">Options</span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-green-500 rounded"></span> Calls</span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-red-500 rounded"></span> Puts</span>
+    </div>
+    <div id="flow-chart" class="w-full h-full bg-neutral-950"></div>
+</div>
+
+<!-- 5. Pressure Chart (Velocity/Hedging Pressure) -->
+<div x-show="!chartZoomed && chartData?.market_velocity?.length > 0" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="velocity">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none flex items-center gap-2">
+        <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">Pressure</span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-green-500 rounded"></span></span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-red-500 rounded"></span></span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-amber-400 rounded"></span></span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-purple-500 rounded"></span></span>
+    </div>
+    <div id="velocity-chart" class="w-full h-full bg-neutral-950"></div>
+</div>
+
+<!-- 6. GEX Chart -->
+<div x-show="!chartZoomed && chartData?.net_gex?.length > 0" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="gex">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none flex items-center gap-2">
+        <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">GEX</span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-green-500 rounded"></span></span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-yellow-400 rounded"></span></span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-orange-500 rounded"></span></span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-red-500 rounded"></span></span>
+    </div>
+    <div id="net-gex-chart" class="w-full h-full bg-neutral-950"></div>
+</div>
+
+<!-- 7. IV Chart -->
+<div x-show="!chartZoomed && chartData?.iv?.length > 0" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="iv">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none flex items-center gap-2">
+        <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">IV</span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-green-500 rounded"></span></span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-yellow-400 rounded"></span></span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-orange-500 rounded"></span></span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-red-500 rounded"></span></span>
+    </div>
+    <div id="iv-chart" class="w-full h-full bg-neutral-950"></div>
+</div>
+
+<!-- 8. GEX Regime Strength Chart -->
+<div x-show="!chartZoomed && (chartData?.gex_regime_strength?.length > 0 || chartData?.total_gex?.length > 0)" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="total-gex">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none flex items-center gap-2">
+        <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded" x-text="chartData?.gex_regime_strength ? 'Regime' : 'Total GEX'">Regime</span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-green-500 rounded"></span> +Γ</span>
+        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-red-500 rounded"></span> -Γ</span>
+    </div>
+    <div id="total-gex-chart" class="w-full h-full bg-neutral-950"></div>
+</div>

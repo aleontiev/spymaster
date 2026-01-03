@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Convert naive Eastern Time timestamps to UTC in trade-quote-1m parquet files.
+Convert naive Eastern Time timestamps to UTC in option-trades-1m parquet files.
 
 This script converts timestamps from naive datetime (assumed ET) to UTC timezone-aware
 datetimes. It properly handles DST transitions.
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 ET = pytz.timezone("America/New_York")
 UTC = pytz.UTC
 
-DATA_DIR = Path("/home/ant/code/spymaster/data/trade-quote-1m")
+DATA_DIR = Path("/home/ant/code/spymaster/data/option-trades-1m")
 
 
 def parse_date_from_path(file_path: Path) -> Optional[date]:
@@ -124,7 +124,7 @@ def process_file(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert naive ET timestamps to UTC in trade-quote-1m files"
+        description="Convert naive ET timestamps to UTC in option-trades-1m files"
     )
     parser.add_argument(
         "--dry-run",

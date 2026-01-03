@@ -6,6 +6,7 @@ Commands for downloading, loading, and managing raw and computed datasets.
 
 from typing import Optional
 
+import pandas as pd
 import typer
 from rich import box
 from rich.table import Table
@@ -91,17 +92,20 @@ def data_download(
     workers: int = typer.Option(4, "--workers", "-w", help="Number of parallel workers"),
     skip_existing: bool = typer.Option(True, "--skip-existing/--no-skip-existing", help="Skip existing files"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be downloaded"),
+    use_alpaca: bool = typer.Option(False, "--alpaca", help="Use Alpaca instead of Polygon for stocks"),
 ):
-    """Download raw data from Polygon S3 (stocks/options).
+    """Download raw data from Polygon S3 or Alpaca (stocks/options).
 
     For GEX flow data, use: python manage.py data load gex-flow
 
     Examples:
         python manage.py data download stocks --from-year 2020 --to-year 2024
+        python manage.py data download stocks --from-year 2012 --to-year 2020 --alpaca
         python manage.py data download options --year 2024
         python manage.py data download options --year 2024 --month 11
     """
     from src.data.providers.polygon import PolygonProvider
+    from src.data.providers.alpaca import AlpacaProvider
 
     if data_type not in ("stocks", "options"):
         console.print(f"[red]Invalid data type: {data_type}[/red]")
@@ -122,12 +126,18 @@ def data_download(
 
     months = [month] if month else list(range(1, 13))
 
+    # Validate provider choice
+    if use_alpaca and data_type == "options":
+        console.print("[red]Alpaca does not provide options data. Use Polygon for options.[/red]")
+        raise typer.Exit(1)
+
     loader = _get_dag_loader()
-    provider = PolygonProvider()
+    provider_name = "Alpaca" if use_alpaca else "Polygon"
     dataset = f"{data_type}-1m"
     underlying = "SPY"
 
     from datetime import date
+    import calendar
     from rich.progress import Progress, SpinnerColumn, TextColumn
 
     files_to_download = []
@@ -149,12 +159,12 @@ def data_download(
         return
 
     if dry_run:
-        console.print(f"[dim]Would download {len(files_to_download)} months of {data_type} data[/dim]")
+        console.print(f"[dim]Would download {len(files_to_download)} months of {data_type} data from {provider_name}[/dim]")
         for yr, mo in files_to_download:
             console.print(f"  {yr}-{mo:02d}")
         return
 
-    console.print(f"[bold]Downloading {len(files_to_download)} months of {data_type} data...[/bold]")
+    console.print(f"[bold]Downloading {len(files_to_download)} months of {data_type} data from {provider_name}...[/bold]")
 
     with Progress(
         SpinnerColumn(),
@@ -166,11 +176,36 @@ def data_download(
         for yr, mo in files_to_download:
             progress.update(task, description=f"Downloading {data_type} {yr}-{mo:02d}...")
             try:
-                first_day = date(yr, mo, 1)
-                if data_type == "stocks":
-                    provider.download_stocks_month(yr, mo, "SPY")
+                if use_alpaca:
+                    # Use Alpaca for stocks
+                    alpaca_provider = AlpacaProvider()
+                    _, last_day = calendar.monthrange(yr, mo)
+                    start_date = date(yr, mo, 1)
+                    end_date = date(yr, mo, last_day)
+                    df = alpaca_provider.fetch_bars_range(underlying, start_date, end_date, feed="sip")
                 else:
-                    provider.download_options_month(yr, mo, "SPY")
+                    # Use Polygon S3 for stocks/options
+                    polygon_provider = PolygonProvider()
+                    df = polygon_provider.fetch_month(data_type, yr, mo, underlying)
+
+                if df.empty:
+                    console.print(f"[yellow]No data for {yr}-{mo:02d}[/yellow]")
+                else:
+                    # Save each day separately
+                    if "window_start" in df.columns:
+                        df["date"] = df["window_start"].dt.date
+                    elif "timestamp" in df.columns:
+                        df["date"] = pd.to_datetime(df["timestamp"]).dt.date
+
+                    days_saved = 0
+                    for day_date, day_df in df.groupby("date"):
+                        day_df = day_df.drop(columns=["date"])
+                        path = loader.resolve_path(dataset, underlying, day_date)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        day_df.to_parquet(path, index=False)
+                        days_saved += 1
+
+                    console.print(f"[green]Saved {len(df)} rows ({days_saved} days) for {yr}-{mo:02d}[/green]")
             except Exception as e:
                 console.print(f"[red]Error downloading {yr}-{mo:02d}: {e}[/red]")
             progress.advance(task)
@@ -180,7 +215,7 @@ def data_download(
 
 @data_app.command("load")
 def data_load(
-    dataset: str = typer.Argument(..., help="Dataset to load (e.g., gex-flow-1m, training-raw)"),
+    dataset: str = typer.Argument(..., help="Dataset to load (e.g., options-flow-1m, training-raw)"),
     start_date: str = typer.Option(..., "--start-date", "-s", help="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = typer.Option(None, "--end-date", "-e", help="End date (YYYY-MM-DD)"),
     underlying: str = typer.Option("SPY", "--underlying", "-u", help="Underlying symbol"),
@@ -194,12 +229,12 @@ def data_load(
     """Load or compute a dataset.
 
     Datasets are organized in a DAG (Directed Acyclic Graph) with automatic dependency resolution.
-    Source datasets (like trade-quote-1m) are fetched from ThetaData.
-    Computed datasets (like gex-flow-1m, training-raw) are derived from source data.
+    Source datasets (like option-trades-1m) are fetched from ThetaData.
+    Computed datasets (like options-flow-1m, training-raw) are derived from source data.
 
     Examples:
-        python manage.py data load trade-quote-1m --start-date 2024-12-15
-        python manage.py data load gex-flow-1m --start-date 2024-12-01 --end-date 2024-12-15
+        python manage.py data load option-trades-1m --start-date 2024-12-15
+        python manage.py data load options-flow-1m --start-date 2024-12-01 --end-date 2024-12-15
         python manage.py data load training-raw --start-date 2024-01-01 --rebuild  # Delete + recompute
     """
     import asyncio
@@ -249,7 +284,7 @@ def data_load(
     dates_to_process = []
     cached_dates = set(loader.get_cached_dates(dataset_id, underlying))
 
-    if fix_zeros and dataset_id == "gex-flow-1m":
+    if fix_zeros and dataset_id == "options-flow-1m":
         console.print("[dim]Scanning for files with zero values...[/dim]")
         for d in available_dates:
             if d in cached_dates:
@@ -303,9 +338,10 @@ def data_load(
     dataset_config = registry.get(dataset_id)
     is_computed = dataset_config.type == "computed"
     is_thetadata_source = dataset_config.type == "source" and dataset_config.provider == "thetadata"
+    is_alpaca_source = dataset_config.type == "source" and dataset_config.provider == "alpaca"
 
     # Process based on dataset type
-    if is_thetadata_source and dataset_id == "trade-quote-1m":
+    if is_thetadata_source and dataset_id == "option-trades-1m":
         # ThetaData source - requires async client
         async def process_thetadata():
             from src.data.thetadata_client import ThetaDataClient
@@ -356,14 +392,27 @@ def data_load(
                         fail += 1
                         continue
 
-                    trade_agg_df = loader.load_single_file("trade-quote-1m", underlying, d)
-                    if trade_agg_df is None or trade_agg_df.empty:
+                    # Check for existing data (incremental loading)
+                    existing_trade_agg_df = None
+                    resume_from = None
+                    if not force:
+                        try:
+                            existing_trade_agg_df = loader.load_single_file("option-trades-1m", underlying, d)
+                            if existing_trade_agg_df is not None and not existing_trade_agg_df.empty and "timestamp" in existing_trade_agg_df.columns:
+                                resume_from = existing_trade_agg_df["timestamp"].max()
+                                console.print(f"  [dim](resuming from {resume_from.strftime('%H:%M')})[/dim]")
+                        except Exception:
+                            pass  # No existing file, fetch full day
+
+                    trade_agg_df = existing_trade_agg_df
+                    if trade_agg_df is None or trade_agg_df.empty or resume_from is not None:
                         console.print("  [dim]Fetching trade+quote data...[/dim]")
                         trade_quotes_df = await client.fetch_trade_quotes_parallel(
-                            d, underlying, zero_dte=True, concurrent_requests=concurrent
+                            d, underlying, zero_dte=True, concurrent_requests=concurrent,
+                            resume_from=resume_from
                         )
 
-                        trade_agg_df = pd.DataFrame()
+                        new_trade_agg_df = pd.DataFrame()
                         if not trade_quotes_df.empty:
                             df = trade_quotes_df.copy()
                             df["sign"] = 0
@@ -380,15 +429,36 @@ def data_load(
                             if "right" in df.columns:
                                 df["right"] = df["right"].str.lower()
 
-                            trade_agg_df = df.groupby(["minute", "strike", "right"]).agg({
+                            # Aggregate with OHLC prices for consolidated dataset
+                            new_trade_agg_df = df.groupby(["minute", "strike", "right"]).agg({
+                                "price": ["first", "max", "min", "last"],
                                 "buy_volume": "sum",
                                 "sell_volume": "sum",
-                                "size": "count",
+                                "size": ["sum", "count"],
                             }).reset_index()
-                            trade_agg_df = trade_agg_df.rename(columns={"minute": "timestamp", "size": "trade_count"})
-                            trade_agg_df["ticker"] = underlying
+                            # Flatten multi-level columns
+                            new_trade_agg_df.columns = [
+                                "timestamp", "strike", "right",
+                                "open", "high", "low", "close",
+                                "buy_volume", "sell_volume",
+                                "volume", "trade_count"
+                            ]
+                            new_trade_agg_df["ticker"] = underlying
 
-                            loader.save_to_cache(trade_agg_df, "trade-quote-1m", underlying, d)
+                        # Merge with existing data if we have both
+                        if not new_trade_agg_df.empty:
+                            if existing_trade_agg_df is not None and not existing_trade_agg_df.empty:
+                                # Concatenate and sort by timestamp to maintain order invariant
+                                trade_agg_df = pd.concat([existing_trade_agg_df, new_trade_agg_df], ignore_index=True)
+                                trade_agg_df = trade_agg_df.drop_duplicates(subset=["timestamp", "strike", "right"], keep="last")
+                                trade_agg_df = trade_agg_df.sort_values("timestamp").reset_index(drop=True)
+                            else:
+                                # Sort new data to ensure timestamp order invariant
+                                trade_agg_df = new_trade_agg_df.sort_values("timestamp").reset_index(drop=True)
+                            loader.save_to_cache(trade_agg_df, "option-trades-1m", underlying, d)
+                        elif existing_trade_agg_df is not None and not existing_trade_agg_df.empty:
+                            # No new data but we have existing - use that
+                            trade_agg_df = existing_trade_agg_df
 
                     console.print("  [dim]Computing GEX flow features...[/dim]")
                     features_df = engine.compute_flow_features(
@@ -413,6 +483,60 @@ def data_load(
 
         asyncio.run(process_thetadata())
 
+    elif is_alpaca_source and dataset_id == "stock-trades-1m":
+        # Alpaca source - fetch stock trades with Lee-Ready classification
+        from src.data.providers.alpaca import AlpacaProvider
+
+        provider = AlpacaProvider()
+        success = 0
+        fail = 0
+
+        for d in dates_to_process:
+            console.print(f"[blue]{d}[/blue]", end=" ")
+            try:
+                # Check for existing data (incremental loading)
+                existing_df = None
+                resume_from = None
+                if not force:
+                    try:
+                        existing_df = loader.load_single_file(dataset_id, underlying, d)
+                        if existing_df is not None and not existing_df.empty and "timestamp" in existing_df.columns:
+                            resume_from = existing_df["timestamp"].max()
+                            console.print(f"[dim](resuming from {resume_from.strftime('%H:%M')})[/dim] ", end="")
+                    except Exception:
+                        pass  # No existing file, fetch full day
+
+                # Fetch new data (incremental if resume_from is set)
+                new_df = provider.fetch_stock_trade_quote_1m(underlying, d, resume_from=resume_from)
+
+                if new_df is not None and not new_df.empty:
+                    # Merge with existing data if we have both
+                    if existing_df is not None and not existing_df.empty:
+                        # Concatenate and sort by timestamp to maintain order invariant
+                        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+                        combined_df = combined_df.drop_duplicates(subset=["timestamp"], keep="last")
+                        combined_df = combined_df.sort_values("timestamp").reset_index(drop=True)
+                        loader.save_to_cache(combined_df, dataset_id, underlying, d)
+                        console.print(f"[green]✓ {len(combined_df)} rows (+{len(new_df)} new)[/green]")
+                    else:
+                        # Sort new data to ensure timestamp order invariant
+                        new_df = new_df.sort_values("timestamp").reset_index(drop=True)
+                        loader.save_to_cache(new_df, dataset_id, underlying, d)
+                        console.print(f"[green]✓ {len(new_df)} rows[/green]")
+                    success += 1
+                elif existing_df is not None and not existing_df.empty:
+                    # No new data but we have existing data - already synced
+                    console.print(f"[cyan]✓ {len(existing_df)} rows (up to date)[/cyan]")
+                    success += 1
+                else:
+                    console.print("[yellow]No data[/yellow]")
+                    fail += 1
+            except Exception as e:
+                console.print(f"[red]Error: {e}[/red]")
+                fail += 1
+
+        console.print(f"\n[bold]Complete:[/bold] {success} succeeded, {fail} failed")
+
     elif is_computed:
         # Computed datasets - use DAG loader with full dependency resolution
         from src.data.dag.tree_display import (
@@ -424,7 +548,7 @@ def data_load(
         fail_count = 0
 
         for d in dates_to_process:
-            resolution_tree = loader.build_resolution_tree(dataset_id, underlying, d, force_recompute=force)
+            resolution_tree = loader.build_resolution_tree(dataset_id, underlying, d, force_recompute=force, show_all_deps=True)
             tree_node = convert_resolution_node_to_tree_node(resolution_tree, force_recompute=force)
 
             from datetime import datetime as dt_module
@@ -442,6 +566,7 @@ def data_load(
                         status: str,
                         progress: float = 0.0,
                         row_count: int = None,
+                        unique_minutes: int = None,
                         error_msg: str = None,
                         status_message: str = None,
                     ):
@@ -452,9 +577,10 @@ def data_load(
                             "error": NodeStatus.ERROR,
                             "cached": NodeStatus.CACHED,
                             "rate_limited": NodeStatus.RATE_LIMITED,
+                            "gap_filling": NodeStatus.LOADING,
                         }
                         node_status = status_map.get(status, NodeStatus.LOADING)
-                        if progress >= 1.0 and status in ("loading", "computing"):
+                        if progress >= 1.0 and status in ("loading", "computing", "gap_filling"):
                             node_status = NodeStatus.CACHED
 
                         status_msg = status_message
@@ -463,6 +589,8 @@ def data_load(
                                 status_msg = "Fetching..."
                             elif status == "computing":
                                 status_msg = "Computing..."
+                            elif status == "gap_filling":
+                                status_msg = "Filling gaps..."
 
                         display.update_node(
                             dataset=dataset,
@@ -470,6 +598,7 @@ def data_load(
                             status=node_status,
                             progress=progress,
                             row_count=row_count,
+                            unique_minutes=unique_minutes,
                             error_msg=error_msg,
                             status_message=status_msg,
                         )
@@ -481,8 +610,11 @@ def data_load(
                     )
 
                     if df is not None and not df.empty:
+                        # Calculate unique minutes for root node
+                        from src.data.dag.loader import count_unique_minutes
+                        root_unique_mins = count_unique_minutes(df)
                         # Update root node to complete
-                        display.update_node(dataset_id, date=d, status=NodeStatus.COMPLETE, row_count=len(df))
+                        display.update_node(dataset_id, date=d, status=NodeStatus.COMPLETE, row_count=len(df), unique_minutes=root_unique_mins)
 
                         # Update all child nodes to COMPLETE/CACHED status
                         # This ensures all dependencies show 100% when loading succeeds
@@ -547,7 +679,7 @@ def data_load(
 
 @data_app.command("check")
 def data_check(
-    dataset: str = typer.Argument("gex-flow-1m", help="Dataset to check"),
+    dataset: str = typer.Argument("options-flow-1m", help="Dataset to check"),
     start_date: str = typer.Option(..., "--start-date", "-s", help="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = typer.Option(None, "--end-date", "-e", help="End date (YYYY-MM-DD)"),
     underlying: str = typer.Option("SPY", "--underlying", "-u", help="Underlying symbol"),
@@ -556,7 +688,7 @@ def data_check(
     """Check data quality for a dataset.
 
     Examples:
-        python manage.py data check gex-flow-1m --start-date 2024-01-01 --end-date 2024-12-31
+        python manage.py data check options-flow-1m --start-date 2024-01-01 --end-date 2024-12-31
         python manage.py data check training-1m-normalized --start-date 2024-06-01 -v
     """
     from datetime import datetime
@@ -631,3 +763,418 @@ def data_check(
             console.print(f"  ... and {len(zero_dates) - 10} more")
         console.print(f"\n[dim]Run with --force to reprocess these:[/dim]")
         console.print(f"[cyan]python manage.py data load {dataset} -s {start_date} -e {end_date or start_date} --fix-zeros[/cyan]")
+
+
+@data_app.command("alpaca-test")
+def data_alpaca_test():
+    """Test Alpaca API connection and credentials.
+
+    Checks:
+    - API key and secret are configured
+    - Connection to Alpaca API
+    - Market status
+    - Latest quote for SPY
+
+    Examples:
+        python manage.py data alpaca-test
+    """
+    import os
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    console.print("[bold]Testing Alpaca Connection[/bold]\n")
+
+    # Check credentials
+    api_key = os.getenv("ALPACA_API_KEY")
+    secret_key = os.getenv("ALPACA_SECRET_KEY")
+
+    if not api_key:
+        console.print("[red]✗ ALPACA_API_KEY not found in .env[/red]")
+        console.print("[dim]Add ALPACA_API_KEY=your_key to .env file[/dim]")
+        raise typer.Exit(1)
+    else:
+        console.print(f"[green]✓ ALPACA_API_KEY found[/green] ({api_key[:8]}...)")
+
+    if not secret_key:
+        console.print("[red]✗ ALPACA_SECRET_KEY not found in .env[/red]")
+        console.print("[dim]Add ALPACA_SECRET_KEY=your_secret to .env file[/dim]")
+        raise typer.Exit(1)
+    else:
+        console.print(f"[green]✓ ALPACA_SECRET_KEY found[/green] ({secret_key[:8]}...)")
+
+    # Test provider
+    try:
+        from src.data.providers.alpaca import AlpacaProvider
+        provider = AlpacaProvider()
+
+        # Check market status
+        is_open = provider.check_market_open()
+        if is_open:
+            console.print("[green]✓ Market is OPEN[/green]")
+        else:
+            console.print("[yellow]○ Market is CLOSED[/yellow]")
+
+        # Get latest quote
+        quote = provider.get_latest_quote("SPY")
+        if quote:
+            console.print(f"[green]✓ Latest SPY quote:[/green] bid=${quote['bid_price']:.2f} ask=${quote['ask_price']:.2f}")
+        else:
+            console.print("[yellow]○ Could not fetch latest quote (market may be closed)[/yellow]")
+
+        # Get latest bar
+        bar = provider.get_latest_bar("SPY")
+        if bar:
+            console.print(f"[green]✓ Latest SPY bar:[/green] O=${bar['open']:.2f} H=${bar['high']:.2f} L=${bar['low']:.2f} C=${bar['close']:.2f}")
+        else:
+            console.print("[yellow]○ Could not fetch latest bar[/yellow]")
+
+        console.print("\n[green]Alpaca connection successful![/green]")
+
+    except Exception as e:
+        console.print(f"[red]✗ Error connecting to Alpaca: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@data_app.command("alpaca-fetch")
+def data_alpaca_fetch(
+    start_date: str = typer.Option(..., "--start-date", "-s", help="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", "-e", help="End date (YYYY-MM-DD)"),
+    underlying: str = typer.Option("SPY", "--underlying", "-u", help="Underlying symbol"),
+    feed: str = typer.Option("sip", "--feed", "-f", help="Data feed (sip=premium, iex=free)"),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing files"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be fetched"),
+):
+    """Fetch historical stocks data from Alpaca API.
+
+    Uses the Alpaca Markets API to fetch minute-level OHLCV data.
+    Premium users should use --feed sip for the full SIP feed.
+    Free users can use --feed iex for IEX data.
+
+    Examples:
+        python manage.py data alpaca-fetch --start-date 2024-12-20
+        python manage.py data alpaca-fetch --start-date 2024-12-01 --end-date 2024-12-20
+        python manage.py data alpaca-fetch --start-date 2024-12-20 --feed iex
+    """
+    from datetime import datetime, timedelta
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+
+    from src.data.providers.alpaca import AlpacaProvider
+
+    # Parse dates
+    start = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else start
+
+    loader = _get_dag_loader()
+    provider = AlpacaProvider()
+
+    # Get trading days
+    from src.db.database import get_db
+    db = get_db()
+    calendar_dates = db.get_trading_days(start.isoformat(), end.isoformat())
+
+    if calendar_dates:
+        dates_to_fetch = sorted([datetime.strptime(d, "%Y-%m-%d").date() for d in calendar_dates])
+    else:
+        dates_to_fetch = []
+        current = start
+        while current <= end:
+            if current.weekday() < 5:
+                dates_to_fetch.append(current)
+            current += timedelta(days=1)
+
+    # Check which dates need fetching
+    if not force:
+        cached_dates = set(loader.get_cached_dates("stocks-1m", underlying))
+        dates_to_fetch = [d for d in dates_to_fetch if d not in cached_dates]
+
+    if not dates_to_fetch:
+        console.print("[green]All dates already cached.[/green]")
+        return
+
+    console.print(f"[bold]Fetching {len(dates_to_fetch)} days from Alpaca ({feed} feed)[/bold]")
+
+    if dry_run:
+        for d in dates_to_fetch[:20]:
+            console.print(f"  {d}")
+        if len(dates_to_fetch) > 20:
+            console.print(f"  ... and {len(dates_to_fetch) - 20} more")
+        return
+
+    success_count = 0
+    fail_count = 0
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Fetching...", total=len(dates_to_fetch))
+
+        for d in dates_to_fetch:
+            progress.update(task, description=f"Fetching {underlying} {d}...")
+
+            try:
+                fetch_config = {"method": "rest_api", "feed": feed}
+                raw_df = provider.fetch(fetch_config, underlying, d)
+
+                if raw_df.empty:
+                    console.print(f"  [yellow]{d}: No data[/yellow]")
+                    fail_count += 1
+                else:
+                    # Map to internal schema
+                    registry = loader.registry
+                    config = registry.get("stocks-1m")
+                    df = provider.map_schema(raw_df, config.field_map)
+
+                    # Save to cache
+                    path = loader.save_to_cache(df, "stocks-1m", underlying, d)
+                    console.print(f"  [green]{d}: {len(df)} bars saved[/green]")
+                    success_count += 1
+
+            except Exception as e:
+                console.print(f"  [red]{d}: Error - {e}[/red]")
+                fail_count += 1
+
+            progress.advance(task)
+
+    console.print(f"\n[bold]Complete:[/bold] {success_count} succeeded, {fail_count} failed")
+
+
+@data_app.command("remove")
+def data_remove(
+    dataset: str = typer.Argument(..., help="Dataset to remove (e.g., options-flow-1m, greeks-1m)"),
+    start_date: str = typer.Option(..., "--start-date", "-s", help="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", "-e", help="End date (YYYY-MM-DD)"),
+    underlying: str = typer.Option("SPY", "--underlying", "-u", help="Underlying symbol"),
+    deep: bool = typer.Option(False, "--deep", "-d", help="Also remove all dependent datasets (downstream)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be removed"),
+):
+    """Remove data files for a dataset within a date range.
+
+    By default, only removes files for the specified dataset.
+    Use --deep to also remove all downstream dependent datasets.
+
+    Examples:
+        # Remove GOOGL options-flow-1m for Dec 22
+        python manage.py data remove options-flow-1m -s 2025-12-22 -u GOOGL
+
+        # Remove all GOOGL data for Dec 22 (including dependencies)
+        python manage.py data remove greeks-1m -s 2025-12-22 -u GOOGL --deep
+
+        # Remove SPY data for a date range
+        python manage.py data remove training-1m-raw -s 2025-12-01 -e 2025-12-15
+
+        # Preview what would be removed
+        python manage.py data remove options-flow-1m -s 2025-12-22 -u GOOGL --deep --dry-run
+    """
+    from datetime import datetime, timedelta
+
+    loader = _get_dag_loader()
+    registry = loader.registry
+
+    # Validate dataset exists in registry
+    if not registry.exists(dataset):
+        console.print(f"[red]Unknown dataset: {dataset}[/red]")
+        all_datasets = registry.list_datasets()
+        console.print(f"[dim]Valid datasets: {', '.join(all_datasets)}[/dim]")
+        raise typer.Exit(1)
+
+    # Parse dates
+    start = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else start
+
+    # Generate date range
+    dates_in_range = []
+    current = start
+    while current <= end:
+        dates_in_range.append(current)
+        current += timedelta(days=1)
+
+    # Determine which datasets to remove
+    if deep:
+        # Get all datasets that depend on this one (downstream)
+        datasets_to_remove = [dataset] + registry.get_dependents(dataset)
+        console.print(f"[bold]Deep removal: {len(datasets_to_remove)} datasets[/bold]")
+    else:
+        datasets_to_remove = [dataset]
+
+    # Find files to remove
+    files_to_remove = []
+    for ds in datasets_to_remove:
+        cached_dates = set(loader.get_cached_dates(ds, underlying))
+        for d in dates_in_range:
+            if d in cached_dates:
+                path = loader.resolve_path(ds, underlying, d)
+                if path.exists():
+                    files_to_remove.append((ds, d, path))
+
+    if not files_to_remove:
+        console.print(f"[yellow]No files found for {underlying} in date range {start} to {end}[/yellow]")
+        raise typer.Exit(0)
+
+    # Display files to remove
+    console.print(f"\n[bold]Files to remove ({len(files_to_remove)}):[/bold]")
+
+    # Group by dataset for display
+    from collections import defaultdict
+    by_dataset = defaultdict(list)
+    total_size = 0
+    for ds, d, path in files_to_remove:
+        size = path.stat().st_size if path.exists() else 0
+        total_size += size
+        by_dataset[ds].append((d, path, size))
+
+    for ds in datasets_to_remove:
+        if ds in by_dataset:
+            files = by_dataset[ds]
+            dates = sorted([f[0] for f in files])
+            ds_size = sum(f[2] for f in files)
+            if len(dates) == 1:
+                console.print(f"  [cyan]{ds}[/cyan]: {dates[0]} ({format_file_size(ds_size)})")
+            else:
+                console.print(f"  [cyan]{ds}[/cyan]: {dates[0]} to {dates[-1]} ({len(files)} files, {format_file_size(ds_size)})")
+
+    console.print(f"\n[dim]Total: {len(files_to_remove)} files, {format_file_size(total_size)}[/dim]")
+
+    if dry_run:
+        console.print("\n[yellow]Dry run - no files removed[/yellow]")
+        raise typer.Exit(0)
+
+    # Confirm deletion
+    if not force:
+        confirm = typer.confirm(f"\nRemove {len(files_to_remove)} files for {underlying}?")
+        if not confirm:
+            console.print("[dim]Cancelled[/dim]")
+            raise typer.Exit(0)
+
+    # Remove files
+    removed_count = 0
+    failed_count = 0
+    for ds, d, path in files_to_remove:
+        try:
+            if path.exists():
+                path.unlink()
+                removed_count += 1
+                # Also remove manifest if it exists
+                manifest_path = path.with_suffix(path.suffix + ".manifest.json")
+                if manifest_path.exists():
+                    manifest_path.unlink()
+        except Exception as e:
+            console.print(f"[red]Failed to remove {path}: {e}[/red]")
+            failed_count += 1
+
+    console.print(f"\n[green]Removed {removed_count} files[/green]")
+    if failed_count > 0:
+        console.print(f"[red]Failed to remove {failed_count} files[/red]")
+
+
+@data_app.command("alpaca-stream")
+def data_alpaca_stream(
+    symbols: str = typer.Option("SPY", "--symbols", "-s", help="Comma-separated symbols to stream"),
+    feed: str = typer.Option("sip", "--feed", "-f", help="Data feed (sip=premium, iex=free)"),
+    duration: int = typer.Option(60, "--duration", "-d", help="Duration in seconds (0 for indefinite)"),
+    show_bars: bool = typer.Option(True, "--bars/--no-bars", help="Show minute bars"),
+    show_quotes: bool = typer.Option(False, "--quotes/--no-quotes", help="Show quotes"),
+    show_trades: bool = typer.Option(False, "--trades/--no-trades", help="Show trades"),
+):
+    """Start real-time data streaming from Alpaca.
+
+    Streams live market data including bars, quotes, and trades.
+    Premium users should use --feed sip for the full SIP feed.
+
+    Examples:
+        python manage.py data alpaca-stream --symbols SPY
+        python manage.py data alpaca-stream --symbols SPY,QQQ --duration 300
+        python manage.py data alpaca-stream --symbols SPY --quotes --trades
+    """
+    import signal
+    import sys
+    from datetime import datetime
+
+    from src.data.providers.alpaca import AlpacaProvider
+
+    symbol_list = [s.strip() for s in symbols.split(",")]
+    provider = AlpacaProvider()
+
+    console.print(f"[bold]Starting Alpaca Stream[/bold]")
+    console.print(f"[dim]Symbols: {symbol_list}[/dim]")
+    console.print(f"[dim]Feed: {feed}[/dim]")
+    console.print(f"[dim]Duration: {'indefinite' if duration == 0 else f'{duration}s'}[/dim]")
+    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+
+    bar_count = 0
+    quote_count = 0
+    trade_count = 0
+
+    def on_bar(bar):
+        nonlocal bar_count
+        bar_count += 1
+        if show_bars:
+            console.print(
+                f"[green]BAR[/green] {bar['symbol']} {bar['timestamp']} "
+                f"O={bar['open']:.2f} H={bar['high']:.2f} L={bar['low']:.2f} C={bar['close']:.2f} "
+                f"V={bar['volume']:,}"
+            )
+
+    def on_quote(quote):
+        nonlocal quote_count
+        quote_count += 1
+        if show_quotes:
+            console.print(
+                f"[blue]QUOTE[/blue] {quote['symbol']} {quote['timestamp']} "
+                f"bid={quote['bid_price']:.2f}x{quote['bid_size']} "
+                f"ask={quote['ask_price']:.2f}x{quote['ask_size']}"
+            )
+
+    def on_trade(trade):
+        nonlocal trade_count
+        trade_count += 1
+        if show_trades:
+            console.print(
+                f"[yellow]TRADE[/yellow] {trade['symbol']} {trade['timestamp']} "
+                f"price={trade['price']:.2f} size={trade['size']}"
+            )
+
+    def signal_handler(sig, frame):
+        console.print("\n[yellow]Stopping stream...[/yellow]")
+        provider.stop_stream()
+        console.print(f"\n[bold]Stream Summary:[/bold]")
+        console.print(f"  Bars: {bar_count}")
+        console.print(f"  Quotes: {quote_count}")
+        console.print(f"  Trades: {trade_count}")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+
+    try:
+        import threading
+
+        if duration > 0:
+            # Start a timer to stop the stream
+            def stop_after_duration():
+                import time
+                time.sleep(duration)
+                provider.stop_stream()
+
+            timer = threading.Thread(target=stop_after_duration, daemon=True)
+            timer.start()
+
+        provider.start_stream(
+            symbols=symbol_list,
+            on_bar=on_bar if show_bars else None,
+            on_quote=on_quote if show_quotes else None,
+            on_trade=on_trade if show_trades else None,
+            feed=feed,
+        )
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        provider.stop_stream()
+        console.print(f"\n[bold]Stream Summary:[/bold]")
+        console.print(f"  Bars: {bar_count}")
+        console.print(f"  Quotes: {quote_count}")
+        console.print(f"  Trades: {trade_count}")

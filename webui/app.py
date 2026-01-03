@@ -911,11 +911,43 @@ def _detect_data_type(file_path: str, columns: List[str]) -> str:
     return "unknown"
 
 
-def _to_unix(ts) -> int:
-    """Convert timestamp to Unix seconds for TradingView."""
-    if hasattr(ts, 'timestamp'):
-        return int(ts.timestamp())
-    return int(pd.Timestamp(ts).timestamp())
+def _to_unix(ts, to_eastern: bool = True) -> int:
+    """Convert timestamp to Unix seconds for TradingView.
+
+    Args:
+        ts: Timestamp to convert
+        to_eastern: If True, adjust so chart displays Eastern time labels
+                   (14:30 UTC will show as 09:30 on the chart)
+    """
+    import pytz
+
+    pt = pd.Timestamp(ts)
+
+    if to_eastern:
+        # Convert to Eastern time for display
+        # lightweight-charts shows time in UTC by default
+        # We want 14:30 UTC to display as 09:30 (Eastern)
+        eastern = pytz.timezone('US/Eastern')
+
+        if pt.tzinfo is not None:
+            # Has timezone - convert to Eastern
+            pt_eastern = pt.astimezone(eastern)
+        else:
+            # No timezone - assume UTC
+            pt_utc = pt.replace(tzinfo=pytz.UTC)
+            pt_eastern = pt_utc.astimezone(eastern)
+
+        # Create a naive timestamp with the Eastern hour/minute
+        # Then treat it as UTC so the chart shows Eastern labels
+        eastern_naive = pt_eastern.replace(tzinfo=None)
+        # Get offset from UTC (in seconds) - we add this to "fake" the Eastern time
+        offset_seconds = pt_eastern.utcoffset().total_seconds()
+
+        # Return the original timestamp adjusted by the offset
+        # This makes the chart display Eastern time
+        return int(pt.timestamp() + offset_seconds)
+
+    return int(pt.timestamp())
 
 
 def _chart_data_stocks(df: pd.DataFrame, file_path: str) -> Any:
@@ -1042,11 +1074,7 @@ def _chart_data_greeks(df: pd.DataFrame, file_path: str) -> Any:
     df['option_type'] = df['right'].str.upper().str[0]  # Take first char: C or P
 
     # Aggregate by timestamp and option type
-    # Use bid/ask midpoint as price proxy since greeks don't have OHLCV
-    df['mid_price'] = (df['bid'] + df['ask']) / 2
-
     agg = df.groupby([time_col, 'option_type']).agg({
-        'mid_price': 'mean',  # Average mid price
         'delta': 'sum',  # Total delta exposure
         'gamma': 'sum',  # Total gamma exposure
         'implied_vol': 'mean',  # Average IV
@@ -1309,14 +1337,14 @@ def _chart_data_training_raw(df: pd.DataFrame, file_path: str) -> Any:
         }
     }
 
-    # Calculate premarket high/low from ACTUAL premarket data
-    # The training-1m-raw file has special candles in positions 0-2 (prior day ranges) and
-    # position 8 (premarket range candle for the current day). We want position 8.
-    # Premarket candles are at 14:24 UTC (9:24 AM ET) for the range candle
+    # Calculate premarket high/low from the premarket range candle
+    # New structure (8 candles at 9:22-9:29 AM ET):
+    # - 9:22: T-3 day, 9:23: blank, 9:24: T-2 day, 9:25: blank
+    # - 9:26: T-1 day, 9:27: blank, 9:28: premarket range, 9:29: blank
+    # The premarket range candle is at 14:28 UTC (9:28 AM ET)
+    premarket_found = False
     if has_ohlcv and len(premarket_df) > 0:
-        # The premarket range candle is at 14:24 (9:24 AM slot) - position 8 in the special candles
-        # It contains the high/low for the entire premarket session (4:00-9:29 AM)
-        premarket_range_mask = (premarket_df['hour'] == 14) & (premarket_df['minute'] == 24)
+        premarket_range_mask = (premarket_df['hour'] == 14) & (premarket_df['minute'] == 28)
         premarket_range = premarket_df[premarket_range_mask]
 
         if len(premarket_range) > 0:
@@ -1324,26 +1352,71 @@ def _chart_data_training_raw(df: pd.DataFrame, file_path: str) -> Any:
             if row['high'] > 0 and row['low'] > 0:
                 result["premarket_high"] = float(row['high'])
                 result["premarket_low"] = float(row['low'])
-        else:
-            # Fallback: use candles at 14:20-14:22 and 14:26-14:28 (actual premarket minutes)
-            actual_premarket_mask = (
-                ((premarket_df['hour'] == 14) & (premarket_df['minute'] >= 20) & (premarket_df['minute'] <= 22)) |
-                ((premarket_df['hour'] == 14) & (premarket_df['minute'] >= 26) & (premarket_df['minute'] <= 28))
-            )
-            actual_premarket = premarket_df[actual_premarket_mask]
-            valid = actual_premarket[(actual_premarket['high'] > 0) & (actual_premarket['low'] > 0)]
-            if len(valid) > 0:
-                result["premarket_high"] = float(valid['high'].max())
-                result["premarket_low"] = float(valid['low'].min())
+                premarket_found = True
+
+    # Fallback: if no premarket candle found, try to fetch from Alpaca for current day
+    if not premarket_found and has_ohlcv and len(market_df) > 0:
+        try:
+            from datetime import date as date_type
+            query_date = market_df[time_col].iloc[0].date()
+            today = date_type.today()
+
+            # Only fetch from Alpaca for today's data
+            if query_date == today:
+                # Extract underlying from file path
+                path_parts = Path(file_path).parts
+                underlying = "SPY"
+                for i, part in enumerate(path_parts):
+                    if part in ("training-1m-raw", "training-1m-normalized", "cache"):
+                        if i + 1 < len(path_parts):
+                            underlying = path_parts[i + 1]
+                        break
+
+                from src.data.providers.alpaca import AlpacaProvider
+                import pytz
+
+                provider = AlpacaProvider()
+                et = pytz.timezone("US/Eastern")
+
+                # Premarket: 4:00 AM - 9:30 AM ET
+                premarket_start = et.localize(pd.Timestamp(query_date).replace(hour=4, minute=0))
+                premarket_end = et.localize(pd.Timestamp(query_date).replace(hour=9, minute=30))
+
+                bars = provider.get_bars(
+                    underlying,
+                    premarket_start.astimezone(pytz.UTC),
+                    premarket_end.astimezone(pytz.UTC),
+                    timeframe="1Min",
+                    feed="sip"
+                )
+
+                if bars and len(bars) > 0:
+                    pm_high = max(b.get('high', 0) for b in bars)
+                    pm_low = min(b.get('low', float('inf')) for b in bars if b.get('low', 0) > 0)
+                    if pm_high > 0 and pm_low < float('inf'):
+                        result["premarket_high"] = float(pm_high)
+                        result["premarket_low"] = float(pm_low)
+        except Exception as e:
+            # Silently ignore premarket fetch errors
+            pass
 
     # Calculate 3-day high/low: prior 3 trading days only (separate from premarket)
     try:
         if len(market_df) > 0:
             query_date = market_df[time_col].iloc[0].date()
 
+            # Extract underlying from file path (e.g., data/training-1m-raw/SLV/2025-12/29.parquet -> SLV)
+            path_parts = Path(file_path).parts
+            underlying = "SPY"  # default
+            for i, part in enumerate(path_parts):
+                if part in ("training-1m-raw", "training-1m-normalized"):
+                    if i + 1 < len(path_parts):
+                        underlying = path_parts[i + 1]
+                    break
+
             # Load stocks-1d data for the past 3 trading days
             # May need to look at current year + previous year for dates at start of year
-            stocks_1d_base = Path("/home/ant/code/spymaster/data/stocks-1d/SPY")
+            stocks_1d_base = Path(f"/home/ant/code/spymaster/data/stocks-1d/{underlying}")
             stocks_frames = []
             for year in [query_date.year, query_date.year - 1]:
                 year_path = stocks_1d_base / f"{year}.parquet"
@@ -1370,22 +1443,58 @@ def _chart_data_training_raw(df: pd.DataFrame, file_path: str) -> Any:
                            "high": float(row['high']), "low": float(row['low']), "close": float(row['close'])}
                           for _, row in market_df.iterrows()
                           if row['open'] > 0 and row['high'] > 0]  # Filter out zero bars
-        result["volume"] = [{"time": _to_unix(row[time_col]), "value": float(row['volume']),
-                            "color": "#26a69a" if row['close'] >= row['open'] else "#ef5350"}
-                           for _, row in market_df.iterrows()
-                           if row['open'] > 0]
+        # Volume bars with daily high highlighting
+        # Gold (#FFD700) for green bars that are current daily high
+        # Purple (#9333EA) for red bars that are current daily high
+        # First bar keeps original color even if it's the daily high
+        volume_data = []
+        max_volume_so_far = 0.0
+        for idx, (_, row) in enumerate(market_df.iterrows()):
+            if row['open'] <= 0:
+                continue
+            vol = float(row['volume'])
+            is_up = row['close'] >= row['open']
 
-        # Compute VWAP on market hours data
+            # Check if this is a new daily high (and not the first bar)
+            is_daily_high = vol > max_volume_so_far and idx > 0
+            max_volume_so_far = max(max_volume_so_far, vol)
+
+            if is_daily_high:
+                color = "#FFD700" if is_up else "#9333EA"  # Gold / Purple
+            else:
+                color = "#26a69a" if is_up else "#ef5350"  # Green / Red
+
+            volume_data.append({"time": _to_unix(row[time_col]), "value": vol, "color": color})
+        result["volume"] = volume_data
+
+        # Use pre-computed VWAP from training-1m-raw if available, otherwise compute it
         mdf = market_df.copy()
+        if 'vwap' in mdf.columns:
+            # Use pre-computed VWAP from training-1m-raw
+            result["vwap"] = [{"time": _to_unix(row[time_col]), "value": float(row['vwap'])}
+                             for _, row in mdf.iterrows() if not pd.isna(row.get('vwap', np.nan)) and row['open'] > 0 and row['vwap'] > 0]
+        else:
+            # Compute VWAP dynamically
+            typical_price = (mdf['high'] + mdf['low'] + mdf['close']) / 3
+            cumulative_tp_vol = (typical_price * mdf['volume']).cumsum()
+            cumulative_vol = mdf['volume'].cumsum()
+            mdf['vwap'] = cumulative_tp_vol / cumulative_vol.replace(0, np.nan)
+            result["vwap"] = [{"time": _to_unix(row[time_col]), "value": float(row['vwap'])}
+                             for _, row in mdf.iterrows() if not pd.isna(row.get('vwap', np.nan)) and row['open'] > 0]
+
+        # VWAP bands (from training-1m-raw)
+        if 'vwap_upper_1' in mdf.columns:
+            result["vwap_upper_1"] = [{"time": _to_unix(row[time_col]), "value": float(row['vwap_upper_1'])}
+                                      for _, row in mdf.iterrows() if not pd.isna(row.get('vwap_upper_1', np.nan)) and row['open'] > 0 and row['vwap_upper_1'] > 0]
+            result["vwap_lower_1"] = [{"time": _to_unix(row[time_col]), "value": float(row['vwap_lower_1'])}
+                                      for _, row in mdf.iterrows() if not pd.isna(row.get('vwap_lower_1', np.nan)) and row['open'] > 0 and row['vwap_lower_1'] > 0]
+            result["vwap_upper_2"] = [{"time": _to_unix(row[time_col]), "value": float(row['vwap_upper_2'])}
+                                      for _, row in mdf.iterrows() if not pd.isna(row.get('vwap_upper_2', np.nan)) and row['open'] > 0 and row['vwap_upper_2'] > 0]
+            result["vwap_lower_2"] = [{"time": _to_unix(row[time_col]), "value": float(row['vwap_lower_2'])}
+                                      for _, row in mdf.iterrows() if not pd.isna(row.get('vwap_lower_2', np.nan)) and row['open'] > 0 and row['vwap_lower_2'] > 0]
+
+        # Rolling VWAP (computed dynamically)
         typical_price = (mdf['high'] + mdf['low'] + mdf['close']) / 3
-        cumulative_tp_vol = (typical_price * mdf['volume']).cumsum()
-        cumulative_vol = mdf['volume'].cumsum()
-        mdf['vwap'] = cumulative_tp_vol / cumulative_vol.replace(0, np.nan)
-
-        result["vwap"] = [{"time": _to_unix(row[time_col]), "value": float(row['vwap'])}
-                         for _, row in mdf.iterrows() if not pd.isna(row.get('vwap', np.nan)) and row['open'] > 0]
-
-        # Rolling VWAP
         rolling_tp_vol = (typical_price * mdf['volume']).rolling(window=30, min_periods=1).sum()
         rolling_vol = mdf['volume'].rolling(window=30, min_periods=1).sum()
         mdf['rolling_vwap'] = rolling_tp_vol / rolling_vol.replace(0, np.nan)
@@ -1449,6 +1558,28 @@ def _chart_data_training_raw(df: pd.DataFrame, file_path: str) -> Any:
         if col in df_features.columns:
             result[col] = [{"time": _to_unix(row[time_col]), "value": float(row[col])}
                           for _, row in df_features.iterrows() if not pd.isna(row[col])]
+
+    # Net GEX with color: Green when positive (stabilizing), Purple when negative (amplifying)
+    if 'net_gex' in df_features.columns:
+        result['net_gex'] = [
+            {
+                "time": _to_unix(row[time_col]),
+                "value": float(row['net_gex']),
+                "color": "#22c55e" if row['net_gex'] >= 0 else "#a855f7"  # green-500 / purple-500
+            }
+            for _, row in df_features.iterrows() if not pd.isna(row['net_gex'])
+        ]
+
+    # Net DEX with color: Teal when positive, Red when negative
+    if 'net_dex' in df_features.columns:
+        result['net_dex'] = [
+            {
+                "time": _to_unix(row[time_col]),
+                "value": float(row['net_dex']),
+                "color": "#14b8a6" if row['net_dex'] >= 0 else "#ef4444"  # teal-500 / red-500
+            }
+            for _, row in df_features.iterrows() if not pd.isna(row['net_dex'])
+        ]
 
     # IV
     if 'implied_volatility' in df_features.columns:
@@ -1517,20 +1648,20 @@ def _chart_data_training_raw(df: pd.DataFrame, file_path: str) -> Any:
             if not pd.isna(row['neg_gex_wall_strike']) and row['neg_gex_wall_strike'] != 0
         ]
 
-    # Delta Support (weighted centroid of delta exposure below spot)
-    if 'delta_support' in df_features.columns:
-        result["delta_support"] = [
-            {"time": _to_unix(row[time_col]), "value": float(row['delta_support'])}
+    # -DWS: Delta-weighted support (centroid of delta exposure below spot)
+    if 'negative_dws' in df_features.columns:
+        result["negative_dws"] = [
+            {"time": _to_unix(row[time_col]), "value": float(row['negative_dws'])}
             for _, row in df_features.iterrows()
-            if not pd.isna(row['delta_support']) and row['delta_support'] != 0
+            if not pd.isna(row['negative_dws']) and row['negative_dws'] != 0
         ]
 
-    # Delta Resistance (weighted centroid of delta exposure above spot)
-    if 'delta_resistance' in df_features.columns:
-        result["delta_resistance"] = [
-            {"time": _to_unix(row[time_col]), "value": float(row['delta_resistance'])}
+    # +DWS: Delta-weighted resistance (centroid of delta exposure above spot)
+    if 'positive_dws' in df_features.columns:
+        result["positive_dws"] = [
+            {"time": _to_unix(row[time_col]), "value": float(row['positive_dws'])}
             for _, row in df_features.iterrows()
-            if not pd.isna(row['delta_resistance']) and row['delta_resistance'] != 0
+            if not pd.isna(row['positive_dws']) and row['positive_dws'] != 0
         ]
 
     # Wall Levels (max exposure strikes)
@@ -1574,6 +1705,69 @@ def _chart_data_training_raw(df: pd.DataFrame, file_path: str) -> Any:
             if not pd.isna(row['market_velocity'])
         ]
 
+    # === Volume Category ===
+    # Most Active Strike (strike with highest options volume)
+    if 'most_active_strike' in df_features.columns:
+        result["most_active_strike"] = [
+            {"time": _to_unix(row[time_col]), "value": float(row['most_active_strike'])}
+            for _, row in df_features.iterrows()
+            if not pd.isna(row['most_active_strike']) and row['most_active_strike'] != 0
+        ]
+
+    # Call Weighted Strike (+WS - volume-weighted average call strike)
+    if 'call_weighted_strike' in df_features.columns:
+        result["call_weighted_strike"] = [
+            {"time": _to_unix(row[time_col]), "value": float(row['call_weighted_strike'])}
+            for _, row in df_features.iterrows()
+            if not pd.isna(row['call_weighted_strike']) and row['call_weighted_strike'] != 0
+        ]
+
+    # Put Weighted Strike (-WS - volume-weighted average put strike)
+    if 'put_weighted_strike' in df_features.columns:
+        result["put_weighted_strike"] = [
+            {"time": _to_unix(row[time_col]), "value": float(row['put_weighted_strike'])}
+            for _, row in df_features.iterrows()
+            if not pd.isna(row['put_weighted_strike']) and row['put_weighted_strike'] != 0
+        ]
+
+    # Max Call Strike (MCS - strike with highest call volume)
+    if 'max_call_strike' in df_features.columns:
+        result["max_call_strike"] = [
+            {"time": _to_unix(row[time_col]), "value": float(row['max_call_strike'])}
+            for _, row in df_features.iterrows()
+            if not pd.isna(row['max_call_strike']) and row['max_call_strike'] != 0
+        ]
+
+    # Max Put Strike (MPS - strike with highest put volume)
+    if 'max_put_strike' in df_features.columns:
+        result["max_put_strike"] = [
+            {"time": _to_unix(row[time_col]), "value": float(row['max_put_strike'])}
+            for _, row in df_features.iterrows()
+            if not pd.isna(row['max_put_strike']) and row['max_put_strike'] != 0
+        ]
+
+    # Point of Control (POC - single strike with highest total volume)
+    if 'point_of_control' in df_features.columns:
+        result["point_of_control"] = [
+            {"time": _to_unix(row[time_col]), "value": float(row['point_of_control'])}
+            for _, row in df_features.iterrows()
+            if not pd.isna(row['point_of_control']) and row['point_of_control'] != 0
+        ]
+
+    # Stock Net Trade Volume (buy - sell) - per-minute imbalance
+    # Handle both old name (stock_trade_ofi) and new name (stock_net_trade_volume)
+    ntv_col = 'stock_net_trade_volume' if 'stock_net_trade_volume' in df_features.columns else 'stock_trade_ofi'
+    if ntv_col in df_features.columns:
+        result['stock_ofi'] = [
+            {
+                "time": _to_unix(row[time_col]),
+                "value": float(row[ntv_col]),
+                "color": "#22c55e" if row[ntv_col] >= 0 else "#ef4444"
+            }
+            for _, row in df_features.iterrows()
+            if not pd.isna(row[ntv_col])
+        ]
+
     return jsonify(result)
 
 
@@ -1600,10 +1794,45 @@ def _chart_data_training_normalized(df: pd.DataFrame, file_path: str) -> Any:
                                      for _, row in df.iterrows() if not pd.isna(row[col])]
 
     # GEX features (already normalized)
+    # Net GEX with color: Green when positive (stabilizing), Purple when negative (amplifying)
+    if 'net_gex' in df.columns:
+        result['net_gex'] = [
+            {
+                "time": _to_unix(row[time_col]),
+                "value": float(row['net_gex']),
+                "color": "#22c55e" if row['net_gex'] >= 0 else "#a855f7"  # green-500 / purple-500
+            }
+            for _, row in df.iterrows() if not pd.isna(row['net_gex'])
+        ]
+
+    # Net DEX with color: Teal when positive, Red when negative
+    if 'net_dex' in df.columns:
+        result['net_dex'] = [
+            {
+                "time": _to_unix(row[time_col]),
+                "value": float(row['net_dex']),
+                "color": "#14b8a6" if row['net_dex'] >= 0 else "#ef4444"  # teal-500 / red-500
+            }
+            for _, row in df.iterrows() if not pd.isna(row['net_dex'])
+        ]
+
+    # Stock Net Trade Volume - per-minute imbalance
+    # Handle both old name (stock_trade_ofi) and new name (stock_net_trade_volume)
+    ntv_col = 'stock_net_trade_volume' if 'stock_net_trade_volume' in df.columns else 'stock_trade_ofi'
+    if ntv_col in df.columns:
+        result['stock_ofi'] = [
+            {
+                "time": _to_unix(row[time_col]),
+                "value": float(row[ntv_col]),
+                "color": "#22c55e" if row[ntv_col] >= 0 else "#ef4444"  # green / red
+            }
+            for _, row in df.iterrows() if not pd.isna(row[ntv_col])
+        ]
+
     gex_cols = [
-        'net_gex', 'net_dex', 'gamma_flow', 'delta_flow', 'market_velocity',
+        'gamma_flow', 'delta_flow', 'market_velocity',
         'zero_gex_price', 'zero_dex_price',
-        'positive_gws', 'negative_gws', 'delta_support', 'delta_resistance',
+        'positive_gws', 'negative_gws', 'negative_dws', 'positive_dws',
         'gamma_call_wall', 'gamma_put_wall', 'dex_call_wall', 'dex_put_wall',
     ]
     for col in gex_cols:
@@ -2548,6 +2777,356 @@ def strategies_page():
 def backtests_page():
     """Backtests list page."""
     return render_template("backtests.html")
+
+
+# =============================================================================
+# Charts Page API Endpoints
+# =============================================================================
+
+@app.route("/api/charts/search")
+def api_charts_search():
+    """Search for tickers - returns common tickers matching query."""
+    query = request.args.get("q", "").upper().strip()
+    if not query:
+        return jsonify([])
+
+    # Common tickers for quick search (cached in memory)
+    common_tickers = [
+        {"symbol": "SPY", "name": "SPDR S&P 500 ETF Trust"},
+        {"symbol": "QQQ", "name": "Invesco QQQ Trust"},
+        {"symbol": "AAPL", "name": "Apple Inc."},
+        {"symbol": "MSFT", "name": "Microsoft Corporation"},
+        {"symbol": "GOOGL", "name": "Alphabet Inc."},
+        {"symbol": "AMZN", "name": "Amazon.com Inc."},
+        {"symbol": "TSLA", "name": "Tesla Inc."},
+        {"symbol": "NVDA", "name": "NVIDIA Corporation"},
+        {"symbol": "META", "name": "Meta Platforms Inc."},
+        {"symbol": "AMD", "name": "Advanced Micro Devices"},
+        {"symbol": "NFLX", "name": "Netflix Inc."},
+        {"symbol": "IWM", "name": "iShares Russell 2000 ETF"},
+        {"symbol": "DIA", "name": "SPDR Dow Jones Industrial Average ETF"},
+        {"symbol": "VXX", "name": "iPath S&P 500 VIX Short-Term Futures ETN"},
+        {"symbol": "GLD", "name": "SPDR Gold Trust"},
+        {"symbol": "SLV", "name": "iShares Silver Trust"},
+        {"symbol": "TLT", "name": "iShares 20+ Year Treasury Bond ETF"},
+        {"symbol": "XLF", "name": "Financial Select Sector SPDR Fund"},
+        {"symbol": "XLE", "name": "Energy Select Sector SPDR Fund"},
+        {"symbol": "XLK", "name": "Technology Select Sector SPDR Fund"},
+        {"symbol": "JPM", "name": "JPMorgan Chase & Co."},
+        {"symbol": "BAC", "name": "Bank of America Corporation"},
+        {"symbol": "WMT", "name": "Walmart Inc."},
+        {"symbol": "V", "name": "Visa Inc."},
+        {"symbol": "MA", "name": "Mastercard Inc."},
+    ]
+
+    # Filter by symbol or name containing the query
+    results = []
+    for ticker in common_tickers:
+        if query in ticker["symbol"] or query.lower() in ticker["name"].lower():
+            results.append(ticker)
+            if len(results) >= 10:
+                break
+
+    # Sort by exact match first, then by how early the match appears
+    results.sort(key=lambda x: (0 if x["symbol"] == query else 1, x["symbol"]))
+    return jsonify(results[:10])
+
+
+@app.route("/api/charts/ohlcv")
+def api_charts_ohlcv():
+    """Get OHLCV data for quick initial chart rendering."""
+    from datetime import date as date_type
+
+    date_str = request.args.get("date")
+    underlying = request.args.get("underlying", "SPY").upper()
+
+    if not date_str:
+        date_str = date_type.today().isoformat()
+
+    try:
+        # Try to load from stocks-1m parquet
+        stocks_path = DATA_DIR / "stocks-1m" / underlying / f"{date_str[:7]}" / f"{date_str[-2:]}.parquet"
+
+        if stocks_path.exists():
+            df = pd.read_parquet(stocks_path)
+
+            # Determine time column - check common names
+            time_col = None
+            for col_name in ['timestamp', 'window_start', 'time', 'datetime']:
+                if col_name in df.columns:
+                    time_col = col_name
+                    break
+            if time_col is None and df.index.name and 'time' in df.index.name.lower():
+                time_col = df.index.name
+                df = df.reset_index()
+            if time_col is None:
+                time_col = 'window_start'  # Default fallback
+
+            df = df.sort_values(time_col)
+
+            # Ensure timestamp is timezone-aware
+            if not hasattr(df[time_col].dtype, 'tz') or df[time_col].dt.tz is None:
+                df[time_col] = pd.to_datetime(df[time_col]).dt.tz_localize('UTC')
+            else:
+                df[time_col] = pd.to_datetime(df[time_col]).dt.tz_convert('UTC')
+
+            # Filter to market hours (9:30 AM - 4:00 PM ET)
+            df['hour'] = df[time_col].dt.hour
+            df['minute'] = df[time_col].dt.minute
+            market_mask = ((df['hour'] > 14) | ((df['hour'] == 14) & (df['minute'] >= 30))) & (df['hour'] < 21)
+            df = df[market_mask]
+
+            # Build candlestick and volume data
+            candles = []
+            volume = []
+            for _, row in df.iterrows():
+                ts = int(row[time_col].timestamp())
+                o = float(row["open"]) if pd.notna(row["open"]) else None
+                h = float(row["high"]) if pd.notna(row["high"]) else None
+                l = float(row["low"]) if pd.notna(row["low"]) else None
+                c = float(row["close"]) if pd.notna(row["close"]) else None
+                v = float(row.get("volume", 0)) if pd.notna(row.get("volume", 0)) else 0
+                candles.append({"time": ts, "open": o, "high": h, "low": l, "close": c})
+                volume.append({
+                    "time": ts,
+                    "value": v,
+                    "color": "rgba(34, 197, 94, 0.5)" if c and o and c >= o else "rgba(239, 68, 68, 0.5)"
+                })
+
+            return jsonify({
+                "status": "ok",
+                "source": "parquet",
+                "underlying": underlying,
+                "date": date_str,
+                "candles": candles,
+                "volume": volume,
+                "rows": len(candles),
+            })
+
+        # If no local data, fetch from Alpaca
+        from src.data.providers.alpaca import AlpacaProvider
+        provider = AlpacaProvider()
+        target_date = date_type.fromisoformat(date_str)
+        df = provider.fetch_bars_range(underlying, target_date, target_date, feed="sip")
+
+        if df is not None and not df.empty:
+            candles = []
+            volume = []
+            for ts, row in df.iterrows():
+                # Handle both Timestamp and int index types
+                if hasattr(ts, 'timestamp'):
+                    time_val = int(ts.timestamp())
+                elif isinstance(ts, (int, float)):
+                    time_val = int(ts)
+                else:
+                    time_val = int(pd.Timestamp(ts).timestamp())
+
+                o = float(row["open"])
+                h = float(row["high"])
+                l = float(row["low"])
+                c = float(row["close"])
+                v = float(row.get("volume", 0))
+                candles.append({"time": time_val, "open": o, "high": h, "low": l, "close": c})
+                volume.append({
+                    "time": time_val,
+                    "value": v,
+                    "color": "rgba(34, 197, 94, 0.5)" if c >= o else "rgba(239, 68, 68, 0.5)"
+                })
+            return jsonify({
+                "status": "ok",
+                "source": "alpaca",
+                "underlying": underlying,
+                "date": date_str,
+                "candles": candles,
+                "volume": volume,
+                "rows": len(candles),
+            })
+
+        return jsonify({
+            "status": "no_data",
+            "underlying": underlying,
+            "date": date_str,
+            "message": "No data available for this date",
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@app.route("/api/charts/data")
+def api_charts_data():
+    """Get full training-1m-raw data with all features."""
+    from datetime import date as date_type
+
+    date_str = request.args.get("date")
+    underlying = request.args.get("underlying", "SPY").upper()
+
+    if not date_str:
+        date_str = date_type.today().isoformat()
+
+    try:
+        # Try training-1m-raw path
+        raw_path = DATA_DIR / "training-1m-raw" / underlying / f"{date_str[:7]}" / f"{date_str[-2:]}.parquet"
+
+        if not raw_path.exists():
+            # Check cache path
+            raw_path = DATA_DIR / "cache" / "raw" / underlying / f"{date_str}.parquet"
+
+        if raw_path.exists():
+            df = pd.read_parquet(raw_path)
+            return _chart_data_training_raw(df, str(raw_path))
+
+        # If no training data, return status indicating data needs to be loaded
+        return jsonify({
+            "status": "not_loaded",
+            "underlying": underlying,
+            "date": date_str,
+            "message": "Training data not available. Trigger /api/charts/load to generate.",
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@app.route("/api/charts/load", methods=["POST"])
+def api_charts_load():
+    """Trigger DAG loader to generate training data for a date."""
+    from datetime import date as date_type
+
+    data = request.get_json() or {}
+    date_str = data.get("date") or request.args.get("date")
+    underlying = (data.get("underlying") or request.args.get("underlying", "SPY")).upper()
+
+    if not date_str:
+        date_str = date_type.today().isoformat()
+
+    try:
+        from src.data.dag.loader import DAGLoader
+
+        loader = DAGLoader()
+        target_date = date_type.fromisoformat(date_str)
+
+        # Load training-1m-raw for this date
+        result = loader.load_day("training-1m-raw", underlying, target_date)
+
+        if result:
+            return jsonify({
+                "status": "ok",
+                "message": f"Data loaded for {underlying} on {date_str}",
+                "path": str(result) if hasattr(result, "__str__") else "loaded",
+            })
+        else:
+            return jsonify({
+                "status": "failed",
+                "message": f"Failed to load data for {underlying} on {date_str}",
+            })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@app.route("/api/charts/realtime")
+def api_charts_realtime():
+    """Get realtime price/volume data from Alpaca."""
+    import arrow
+    from datetime import date as date_type
+
+    underlying = request.args.get("underlying", "SPY").upper()
+
+    try:
+        from src.data.providers.alpaca import AlpacaProvider
+        from src.utils.market_hours import get_market_hours_utc
+
+        provider = AlpacaProvider()
+
+        # Get current time
+        now = arrow.now("UTC")
+        today = now.date()
+
+        # Check if within market hours (including extended hours 4 AM - 8 PM ET)
+        # Extended hours: 4:00 AM - 8:00 PM ET = 9:00 - 1:00 UTC (next day)
+        # We'll be generous and check regular market hours only for simplicity
+        market_open, market_close = get_market_hours_utc(today)
+
+        # Check if market is open (with 30 min buffer for pre/post)
+        is_market_hours = market_open <= now.naive <= market_close
+
+        # Get latest bar and quote
+        bar = provider.get_latest_bar(underlying, feed="sip")
+        quote = provider.get_latest_quote(underlying, feed="sip")
+
+        result = {
+            "underlying": underlying,
+            "timestamp": now.isoformat(),
+            "is_market_hours": is_market_hours,
+            "market_open": market_open.isoformat() if market_open else None,
+            "market_close": market_close.isoformat() if market_close else None,
+        }
+
+        if bar:
+            result["bar"] = {
+                "time": int(bar["timestamp"].timestamp()) if bar.get("timestamp") else None,
+                "open": bar.get("open"),
+                "high": bar.get("high"),
+                "low": bar.get("low"),
+                "close": bar.get("close"),
+                "volume": bar.get("volume"),
+                "vwap": bar.get("vwap"),
+            }
+
+        if quote:
+            result["quote"] = {
+                "bid": quote.get("bid_price"),
+                "ask": quote.get("ask_price"),
+                "bid_size": quote.get("bid_size"),
+                "ask_size": quote.get("ask_size"),
+                "mid": (quote.get("bid_price", 0) + quote.get("ask_price", 0)) / 2 if quote.get("bid_price") and quote.get("ask_price") else None,
+            }
+
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@app.route("/api/charts/sync-minute", methods=["POST"])
+def api_charts_sync_minute():
+    """Sync a completed minute's data with full feature computation."""
+    from datetime import date as date_type
+
+    data = request.get_json() or {}
+    date_str = data.get("date") or request.args.get("date")
+    minute = data.get("minute")  # Format: "HH:MM"
+    underlying = (data.get("underlying") or request.args.get("underlying", "SPY")).upper()
+
+    if not date_str or not minute:
+        return jsonify({"error": "date and minute parameters required"}), 400
+
+    try:
+        # For now, trigger a full day reload (future: incremental minute sync)
+        from src.data.dag.loader import DAGLoader
+
+        loader = DAGLoader()
+        target_date = date_type.fromisoformat(date_str)
+
+        result = loader.load_day("training-1m-raw", underlying, target_date)
+
+        return jsonify({
+            "status": "ok" if result else "failed",
+            "underlying": underlying,
+            "date": date_str,
+            "minute": minute,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@app.route("/charts")
+def charts_page():
+    """Fullscreen charts page with realtime updates."""
+    from datetime import date
+    return render_template("charts.html", default_date=date.today().isoformat(), default_underlying="SPY")
 
 
 @app.route("/backtest/<path:name>")

@@ -139,23 +139,28 @@ class TestGEXFlowEngine:
 
     def test_initialization(self) -> None:
         """Test engine initialization."""
-        engine = GEXFlowEngine(strike_filter_pct=0.15, vwap_window_30m=30)
+        engine = GEXFlowEngine(gex_strike_filter_pct=0.15, vwap_window_30m=30)
 
-        assert engine.strike_filter_pct == 0.15
+        assert engine.gex_strike_filter_pct == 0.15
         assert engine.vwap_window_30m == 30
-        assert engine._cumulative_net_gex == 0.0
-        assert engine._cumulative_net_dex == 0.0
+        assert engine._smoothed_zero_gex is None
+        assert engine._smoothed_zero_dex is None
 
     def test_reset_daily_state(self) -> None:
         """Test daily state reset."""
         engine = GEXFlowEngine()
-        engine._cumulative_net_gex = 1000.0
-        engine._cumulative_net_dex = 500.0
+        # Set some internal state
+        engine._smoothed_zero_gex = 500.0
+        engine._smoothed_zero_dex = 501.0
+        engine._pos_gws_history = [(500.0, 1.0)]
+        engine._neg_gws_history = [(495.0, 1.0)]
 
         engine.reset_daily_state()
 
-        assert engine._cumulative_net_gex == 0.0
-        assert engine._cumulative_net_dex == 0.0
+        assert engine._smoothed_zero_gex is None
+        assert engine._smoothed_zero_dex is None
+        assert engine._pos_gws_history == []
+        assert engine._neg_gws_history == []
 
     def test_aggregate_trades_to_1min(self) -> None:
         """Test trade aggregation to 1-minute intervals."""
@@ -190,22 +195,15 @@ class TestGEXFlowEngine:
         assert minute_2["buy_volume"].iloc[0] == 0
         assert minute_2["sell_volume"].iloc[0] == 25
 
-    def test_gamma_sentiment_ratio_bounds(self) -> None:
-        """Test gamma sentiment ratio is bounded to [-1, 1]."""
+    def test_default_initialization(self) -> None:
+        """Test default engine initialization values."""
         engine = GEXFlowEngine()
 
-        # Normal case
-        ratio = engine._compute_gamma_sentiment_ratio(100.0, 200.0)
-        assert -1.0 <= ratio <= 1.0
-        assert ratio == 0.5
-
-        # Edge case: zero total flow
-        ratio = engine._compute_gamma_sentiment_ratio(0.0, 0.0)
-        assert ratio == 0.0
-
-        # Edge case: net flow larger than total (shouldn't happen but handle gracefully)
-        ratio = engine._compute_gamma_sentiment_ratio(300.0, 200.0)
-        assert ratio == 1.0  # Clipped
+        # Check defaults
+        assert engine.gex_strike_filter_pct == 0.05
+        assert engine.vwap_window_30m == 30
+        assert engine.min_oi_threshold == 100.0
+        assert engine.classifier is not None
 
 
 class TestGEXFlowFeatures:
@@ -216,19 +214,44 @@ class TestGEXFlowFeatures:
         features = GEXFlowFeatures(
             timestamp=datetime(2024, 1, 15, 10, 0),
             underlying_price=500.0,
-            total_gex=100000.0,
-            net_gamma_flow=1000.0,
-            cumulative_net_gex=5000.0,
-            net_delta_flow=2000.0,
-            anchored_vwap_z=1.5,
-            gamma_sentiment_ratio=0.3,
-            vwap_divergence=0.01,
-            implied_volatility=0.25,
-            pos_gex_wall_strike=505.0,
-            neg_gex_wall_strike=495.0,
+            # Core exposure metrics
+            net_gex=100000.0,
+            net_dex=50000.0,
+            gamma_flow=1000.0,
+            delta_flow=2000.0,
+            # Zero crossing levels
             zero_gex_price=500.0,
             zero_dex_price=500.5,
-            gex_regime_strength=100000.0,
+            # Weighted strike centroids
+            positive_gws=505.0,
+            negative_gws=495.0,
+            negative_dws=498.0,
+            positive_dws=502.0,
+            # Wall levels
+            gamma_call_wall=510.0,
+            gamma_put_wall=490.0,
+            dex_call_wall=508.0,
+            dex_put_wall=492.0,
+            # Wall strengths
+            gamma_call_wall_strength=0.15,
+            gamma_put_wall_strength=0.12,
+            dex_call_wall_strength=0.10,
+            dex_put_wall_strength=0.08,
+            # Volume activity metrics
+            most_active_strike=500.0,
+            most_active_strike_volume=10000.0,
+            call_weighted_strike=505.0,
+            call_weighted_strike_volume=5000.0,
+            put_weighted_strike=495.0,
+            put_weighted_strike_volume=4000.0,
+            # Flow metrics
+            market_velocity=50000.0,
+            # VWAP features
+            anchored_vwap_z=1.5,
+            vwap_divergence=0.01,
+            # Volatility
+            implied_volatility=0.25,
+            # Trade aggression
             call_buy_volume=500.0,
             call_sell_volume=300.0,
             put_buy_volume=400.0,
@@ -239,13 +262,13 @@ class TestGEXFlowFeatures:
 
         assert d["timestamp"] == datetime(2024, 1, 15, 10, 0)
         assert d["underlying_price"] == 500.0
-        assert d["net_gamma_flow"] == 1000.0
-        assert d["gamma_sentiment_ratio"] == 0.3
+        assert d["net_gex"] == 100000.0
+        assert d["gamma_flow"] == 1000.0
         assert d["implied_volatility"] == 0.25
-        assert d["gex_regime_strength"] == 100000.0
+        assert d["gamma_call_wall"] == 510.0
         assert d["call_buy_volume"] == 500.0
         assert d["put_sell_volume"] == 200.0
-        assert len(d) == 19  # All 19 fields
+        assert len(d) == 34  # All 34 fields
 
 
 class TestGEXFlowEngineIntegration:
@@ -274,6 +297,7 @@ class TestGEXFlowEngineIntegration:
             "delta": [0.5],
             "gamma": [0.02],
             "underlying_price": [500.0],
+            "iv": [0.25],
         })
 
         underlying_prices = pd.DataFrame({
@@ -290,6 +314,6 @@ class TestGEXFlowEngineIntegration:
 
         # Should compute features even without trades (flow = 0)
         assert len(result) == 1
-        assert result["net_gamma_flow"].iloc[0] == 0.0
-        assert result["net_delta_flow"].iloc[0] == 0.0
-        assert "gex_regime_strength" in result.columns
+        assert result["gamma_flow"].iloc[0] == 0.0
+        assert result["delta_flow"].iloc[0] == 0.0
+        assert "net_gex" in result.columns

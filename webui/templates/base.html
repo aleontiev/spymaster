@@ -7,6 +7,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="/static/js/chart-utils.js"></script>
+    <script src="/static/js/training-chart-view.js"></script>
     <script>
         tailwind.config = {
             theme: {
@@ -104,6 +106,12 @@
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path>
                             </svg>
                             Data
+                        </a>
+                        <a href="/charts" class="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium hover:bg-neutral-800 {% if request.path == '/charts' %}bg-neutral-800 text-primary-400{% endif %}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path>
+                            </svg>
+                            Charts
                         </a>
                         <a href="/backtests" class="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium hover:bg-neutral-800 {% if request.path.startswith('/backtest') %}bg-neutral-800 text-primary-400{% endif %}">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

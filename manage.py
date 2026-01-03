@@ -32,7 +32,7 @@ from src.managers import CheckpointManager, StrategyManager, CacheManager
 # Import command apps from commands package
 from commands.data import data_app
 from commands.datasets import datasets_app
-from commands.calendar import calendar_app
+from commands.market_calendar import calendar_app
 
 # Initialize
 app = typer.Typer(

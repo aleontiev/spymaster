@@ -1,0 +1,418 @@
+{% extends "base.html" %}
+
+{% block title %}Charts - Spymaster{% endblock %}
+
+{% block content %}
+<style>
+    /* Dark theme datepicker */
+    input[type="date"]::-webkit-calendar-picker-indicator {
+        filter: invert(0.8);
+        cursor: pointer;
+    }
+    input[type="date"] {
+        color-scheme: dark;
+        cursor: pointer;
+    }
+    /* Make the entire date input clickable */
+    .date-input-wrapper {
+        position: relative;
+        cursor: pointer;
+    }
+    .date-input-wrapper input[type="date"] {
+        cursor: pointer;
+    }
+</style>
+<div x-data="chartsApp()" x-init="init()" class="fixed inset-0 pt-16 bg-neutral-950">
+    <!-- Header Bar -->
+    <div class="absolute top-16 left-0 right-0 h-14 bg-neutral-900 border-b border-neutral-700 px-4 flex items-center justify-between z-10">
+        <!-- Left: Controls -->
+        <div class="flex items-center gap-4">
+            <!-- Date Picker -->
+            <div class="flex items-center gap-2">
+                <label class="text-xs text-gray-500">Date</label>
+                <div class="date-input-wrapper" @click="$refs.dateInput.showPicker()">
+                    <input type="date"
+                           x-ref="dateInput"
+                           x-model="selectedDate"
+                           @change="loadChart()"
+                           class="bg-neutral-800 border border-neutral-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-primary-500 cursor-pointer">
+                </div>
+            </div>
+
+            <!-- Underlying Search -->
+            <div class="flex items-center gap-2 relative">
+                <label class="text-xs text-gray-500">Symbol</label>
+                <input type="text"
+                       x-model="underlyingSearch"
+                       @input="searchTickers()"
+                       @keydown.enter="selectTicker(underlyingSearch.toUpperCase())"
+                       @keydown.escape="tickerResults = []"
+                       @focus="if(underlyingSearch.length >= 1) searchTickers()"
+                       placeholder="SPY"
+                       class="bg-neutral-800 border border-neutral-700 rounded px-3 py-1.5 text-sm w-24 uppercase focus:outline-none focus:border-primary-500">
+                <!-- Autocomplete dropdown -->
+                <div x-show="tickerResults.length > 0"
+                     x-cloak
+                     @click.outside="tickerResults = []"
+                     class="absolute top-full left-8 mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-lg z-50 max-h-60 overflow-y-auto min-w-48">
+                    <template x-for="ticker in tickerResults" :key="ticker.symbol">
+                        <button @click="selectTicker(ticker.symbol)"
+                                class="w-full px-3 py-2 text-left hover:bg-neutral-700 flex items-center justify-between text-sm">
+                            <span class="font-mono" x-text="ticker.symbol"></span>
+                            <span class="text-xs text-gray-500 truncate ml-2" x-text="ticker.name"></span>
+                        </button>
+                    </template>
+                </div>
+            </div>
+
+            <!-- Current underlying display -->
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-neutral-800 rounded">
+                <span class="font-bold text-primary-400" x-text="underlying"></span>
+                <span class="text-sm text-gray-400" x-text="formatDate(selectedDate)"></span>
+                <span x-show="lastPrice" class="font-mono">
+                    <span x-text="'$' + lastPrice?.toFixed(2)"></span>
+                    <span :class="priceChange >= 0 ? 'text-green-400' : 'text-red-400'"
+                          x-text="(priceChange >= 0 ? '+' : '') + priceChange?.toFixed(2) + '%'"></span>
+                </span>
+            </div>
+        </div>
+
+        <!-- Center: Status -->
+        <div class="flex items-center gap-3">
+            <!-- Loading indicator -->
+            <div x-show="loading" class="flex items-center gap-2 text-yellow-400">
+                <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span class="text-sm" x-text="loadingMessage"></span>
+            </div>
+
+            <!-- Realtime indicator -->
+            <div x-show="isRealtime && !loading" class="flex items-center gap-2">
+                <span class="relative flex h-2 w-2">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                </span>
+                <span class="text-sm text-green-400">LIVE</span>
+            </div>
+
+            <!-- Data status -->
+            <div x-show="!loading && dataStatus" class="text-xs text-gray-500">
+                <span x-text="dataStatus"></span>
+            </div>
+        </div>
+
+        <!-- Right: Legend toggles with dropdowns -->
+        <div x-show="hasFullData">
+            {% include 'partials/_chart_legend.html' %}
+        </div>
+    </div>
+
+    <!-- Chart Area - Uses shared training chart view layout -->
+    <div class="absolute top-30 left-0 right-0 bottom-0 flex flex-col px-4 py-2" style="top: 7.5rem;" @resize.window="handleResize()">
+        <!-- Error message -->
+        <div x-show="error" class="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-4">
+            <p class="text-red-400" x-text="error"></p>
+        </div>
+
+        <!-- Charts container - flex layout fills viewport -->
+        <div x-show="!error" class="flex-1 flex flex-col min-h-0 overflow-hidden" id="charts-flex-container">
+            {% include 'partials/_training_charts.html' %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function chartsApp() {
+    return {
+        // State
+        selectedDate: '{{ default_date }}',
+        underlying: '{{ default_underlying }}',
+        underlyingSearch: '{{ default_underlying }}',
+        tickerResults: [],
+        loading: false,
+        loadingMessage: '',
+        error: null,
+        dataStatus: null,
+        chartData: null,
+        hasFullData: false,
+        isRealtime: false,
+        lastPrice: null,
+        priceChange: null,
+        openPrice: null,
+        chartZoomed: false,
+        showZoomButton: true,
+
+        // Realtime polling
+        realtimeInterval: null,
+
+        init() {
+            // Parse URL params
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('date')) this.selectedDate = params.get('date');
+            if (params.get('underlying')) {
+                this.underlying = params.get('underlying').toUpperCase();
+                this.underlyingSearch = this.underlying;
+            }
+
+            // Initialize TrainingChartView
+            TrainingChartView.init();
+
+            // Load initial chart
+            this.loadChart();
+
+            // Handle browser back/forward
+            window.addEventListener('popstate', () => {
+                const params = new URLSearchParams(window.location.search);
+                if (params.get('date')) this.selectedDate = params.get('date');
+                if (params.get('underlying')) this.underlying = params.get('underlying').toUpperCase();
+                this.loadChart();
+            });
+        },
+
+        formatDate(dateStr) {
+            const d = new Date(dateStr + 'T00:00:00');
+            return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+        },
+
+        updateUrl() {
+            const url = new URL(window.location);
+            url.searchParams.set('date', this.selectedDate);
+            url.searchParams.set('underlying', this.underlying);
+            window.history.pushState({}, '', url);
+        },
+
+        async searchTickers() {
+            if (this.underlyingSearch.length < 1) {
+                this.tickerResults = [];
+                return;
+            }
+
+            try {
+                const resp = await fetch(`/api/charts/search?q=${encodeURIComponent(this.underlyingSearch)}`);
+                if (resp.ok) {
+                    this.tickerResults = await resp.json();
+                }
+            } catch (e) {
+                console.error('Ticker search error:', e);
+            }
+        },
+
+        selectTicker(symbol) {
+            this.underlying = symbol.toUpperCase();
+            this.underlyingSearch = this.underlying;
+            this.tickerResults = [];
+            this.loadChart();
+        },
+
+        toggleGroup(group) {
+            TrainingChartView.toggleGroup(group);
+        },
+
+        toggleChartZoom() {
+            this.chartZoomed = !this.chartZoomed;
+            TrainingChartView.chartZoomed = this.chartZoomed;
+            // Trigger resize after Alpine updates the DOM
+            this.$nextTick(() => {
+                TrainingChartView.handleResize();
+                TrainingChartView.updateXAxisVisibility();
+            });
+        },
+
+        handleResize() {
+            TrainingChartView.handleResize();
+        },
+
+        async loadChart() {
+            this.error = null;
+            this.loading = true;
+            this.loadingMessage = 'Loading OHLCV data...';
+            this.hasFullData = false;
+            this.stopRealtime();
+
+            // Reset chartData FIRST to hide conditional subchart containers
+            this.chartData = null;
+            TrainingChartView.destroy();
+            this.updateUrl();
+
+            // Wait for Alpine to process chartData=null and hide containers, then layout to recalculate
+            await this.$nextTick();
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+            try {
+                // Phase 1: Load OHLCV quickly
+                const ohlcvResp = await fetch(`/api/charts/ohlcv?date=${this.selectedDate}&underlying=${this.underlying}`);
+                const ohlcvData = await ohlcvResp.json();
+
+                if (ohlcvData.error) {
+                    throw new Error(ohlcvData.error);
+                }
+
+                if (ohlcvData.status === 'no_data') {
+                    this.error = ohlcvData.message || 'No data available for this date';
+                    this.loading = false;
+                    return;
+                }
+
+                // Render basic OHLCV chart - convert to full format
+                const basicData = {
+                    ohlcv: ohlcvData.candles || [],
+                    volume: ohlcvData.volume || [],
+                };
+
+                // Set chartData BEFORE render so x-show conditions are correct
+                this.chartData = basicData;
+                await this.$nextTick();
+                await new Promise(resolve => requestAnimationFrame(resolve));
+
+                TrainingChartView.render(basicData);
+                TrainingChartView.handleResize();
+                TrainingChartView.fitAllCharts();
+
+                // Update price info
+                if (basicData.ohlcv?.length > 0) {
+                    const first = basicData.ohlcv[0];
+                    const last = basicData.ohlcv[basicData.ohlcv.length - 1];
+                    this.openPrice = first.open;
+                    this.lastPrice = last.close;
+                    this.priceChange = ((last.close - first.open) / first.open) * 100;
+                }
+
+                this.dataStatus = `${ohlcvData.rows || 0} bars`;
+                this.loading = false;
+
+                // Phase 2: Load full features in background
+                this.loadFullData();
+
+                // Phase 3: Check if we should enable realtime
+                this.checkRealtimeEligibility();
+
+            } catch (e) {
+                this.error = e.message;
+                this.loading = false;
+            }
+        },
+
+        async loadFullData() {
+            try {
+                const resp = await fetch(`/api/charts/data?date=${this.selectedDate}&underlying=${this.underlying}`);
+                const data = await resp.json();
+
+                if (data.error || data.status === 'not_loaded') {
+                    console.warn('Full data not available:', data.message || data.error);
+                    return;
+                }
+
+                // Set chartData and hasFullData BEFORE render so x-show conditions show all subcharts
+                this.chartData = data;
+                this.hasFullData = true;
+
+                // Wait for Alpine to update DOM and layout to recalculate container sizes
+                await this.$nextTick();
+                await new Promise(resolve => requestAnimationFrame(resolve));
+
+                // Re-render with full data and fit to show all content
+                TrainingChartView.render(data);
+                TrainingChartView.handleResize();
+                TrainingChartView.fitAllCharts();
+                this.dataStatus = `${data.metadata?.rows || 0} bars (full)`;
+
+                // Update price info from full data
+                if (data.ohlcv?.length > 0) {
+                    const first = data.ohlcv[0];
+                    const last = data.ohlcv[data.ohlcv.length - 1];
+                    this.openPrice = first.open;
+                    this.lastPrice = last.close;
+                    this.priceChange = ((last.close - first.open) / first.open) * 100;
+                }
+
+            } catch (e) {
+                console.error('Error loading full data:', e);
+            }
+        },
+
+        checkRealtimeEligibility() {
+            const today = new Date().toISOString().split('T')[0];
+            if (this.selectedDate !== today) {
+                this.isRealtime = false;
+                return;
+            }
+
+            // Check if market is open (simplified - server will validate)
+            const now = new Date();
+            const hour = now.getUTCHours();
+            // Extended hours: 4AM-8PM ET = 9:00-01:00 UTC (approx)
+            const inExtendedHours = (hour >= 9 && hour < 24) || hour < 1;
+
+            if (inExtendedHours) {
+                this.startRealtime();
+            }
+        },
+
+        startRealtime() {
+            this.isRealtime = true;
+
+            // Poll every second
+            this.realtimeInterval = setInterval(() => this.pollRealtime(), 1000);
+        },
+
+        stopRealtime() {
+            this.isRealtime = false;
+            if (this.realtimeInterval) {
+                clearInterval(this.realtimeInterval);
+                this.realtimeInterval = null;
+            }
+        },
+
+        async pollRealtime() {
+            try {
+                const resp = await fetch(`/api/charts/realtime?underlying=${this.underlying}`);
+                const data = await resp.json();
+
+                if (data.error) {
+                    console.warn('Realtime error:', data.error);
+                    return;
+                }
+
+                // Update live candle
+                if (data.bar && TrainingChartView.chartSeries.ohlcv) {
+                    this.lastPrice = data.bar.close;
+
+                    if (!this.openPrice && data.bar.open) {
+                        this.openPrice = data.bar.open;
+                    }
+                    if (this.openPrice) {
+                        this.priceChange = ((data.bar.close - this.openPrice) / this.openPrice) * 100;
+                    }
+
+                    // Update the latest candle
+                    if (data.bar.time) {
+                        TrainingChartView.chartSeries.ohlcv.update({
+                            time: data.bar.time,
+                            open: data.bar.open,
+                            high: data.bar.high,
+                            low: data.bar.low,
+                            close: data.bar.close
+                        });
+                    }
+
+                    if (TrainingChartView.chartSeries.volume && data.bar.volume !== undefined && data.bar.time) {
+                        TrainingChartView.chartSeries.volume.update({
+                            time: data.bar.time,
+                            value: data.bar.volume,
+                            color: data.bar.close >= data.bar.open ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)'
+                        });
+                    }
+                }
+
+            } catch (e) {
+                console.error('Realtime poll error:', e);
+            }
+        }
+    };
+}
+</script>
+{% endblock %}
