@@ -102,12 +102,12 @@ const TrainingChartView = {
                 fixRightEdge: true,
             },
             leftPriceScale: {
+                visible: false,
+            },
+            rightPriceScale: {
                 visible: true,
                 borderColor: '#333',
                 minimumWidth: 70,
-            },
-            rightPriceScale: {
-                visible: false,
             },
         };
     },
@@ -180,7 +180,7 @@ const TrainingChartView = {
                     borderVisible: false,
                     wickUpColor: '#26a69a',
                     wickDownColor: '#ef5350',
-                    priceScaleId: 'left',
+                    priceScaleId: 'right',
                     priceLineVisible: false,
                     lastValueVisible: false,
                 });
@@ -210,7 +210,7 @@ const TrainingChartView = {
 
             const volumeSeries = volumeChart.addHistogramSeries({
                 priceFormat: { type: 'volume' },
-                priceScaleId: 'left',
+                priceScaleId: 'right',
                 lastValueVisible: false,
                 priceLineVisible: false,
             });
@@ -234,15 +234,18 @@ const TrainingChartView = {
             this.charts.imbalance = imbalanceChart;
 
             const imbalanceSeries = imbalanceChart.addHistogramSeries({
-                priceScaleId: 'left',
+                priceScaleId: 'right',
                 lastValueVisible: false,
                 priceLineVisible: false,
             });
-            imbalanceSeries.setData(data.stock_ofi.map(d => ({
-                time: d.time,
-                value: d.value,
-                color: d.value >= 0 ? '#22c55e' : '#ef4444'
-            })));
+            // Filter out null values to avoid chart errors
+            imbalanceSeries.setData(data.stock_ofi
+                .filter(d => d.value != null)
+                .map(d => ({
+                    time: d.time,
+                    value: d.value,
+                    color: d.value >= 0 ? '#22c55e' : '#ef4444'
+                })));
             this.chartSeries.imbalance = imbalanceSeries;
 
             if (mainVisibleRange) imbalanceChart.timeScale().setVisibleRange(mainVisibleRange);
@@ -264,7 +267,7 @@ const TrainingChartView = {
             if (data.call_volume?.length > 0) {
                 const callSeries = flowChart.addHistogramSeries({
                     color: '#26a69a',
-                    priceScaleId: 'left',
+                    priceScaleId: 'right',
                     priceFormat: { type: 'volume' },
                     lastValueVisible: false,
                     priceLineVisible: false,
@@ -274,7 +277,7 @@ const TrainingChartView = {
 
                 const putSeries = flowChart.addHistogramSeries({
                     color: '#ef5350',
-                    priceScaleId: 'left',
+                    priceScaleId: 'right',
                     priceFormat: { type: 'volume' },
                     lastValueVisible: false,
                     priceLineVisible: false,
@@ -300,7 +303,7 @@ const TrainingChartView = {
 
             const velocitySeries = velocityChart.addHistogramSeries({
                 priceFormat: { type: 'volume' },
-                priceScaleId: 'left',
+                priceScaleId: 'right',
                 priceLineVisible: false,
                 lastValueVisible: false,
             });
@@ -313,21 +316,24 @@ const TrainingChartView = {
             if (data.put_volume) data.put_volume.forEach(d => putVolByTime.set(d.time, Math.abs(d.value)));
             if (data.ohlcv) data.ohlcv.forEach(d => ohlcByTime.set(d.time, d));
 
-            const coloredData = data.market_velocity.map(d => {
-                const callVol = callVolByTime.get(d.time) || 0;
-                const putVol = putVolByTime.get(d.time) || 0;
-                const ohlc = ohlcByTime.get(d.time);
-                const priceDown = ohlc ? ohlc.close < ohlc.open : false;
-                const priceUp = ohlc ? ohlc.close > ohlc.open : false;
+            // Filter out null values to avoid chart errors
+            const coloredData = data.market_velocity
+                .filter(d => d.value != null)
+                .map(d => {
+                    const callVol = callVolByTime.get(d.time) || 0;
+                    const putVol = putVolByTime.get(d.time) || 0;
+                    const ohlc = ohlcByTime.get(d.time);
+                    const priceDown = ohlc ? ohlc.close < ohlc.open : false;
+                    const priceUp = ohlc ? ohlc.close > ohlc.open : false;
 
-                let color;
-                if (d.value >= 0) {
-                    color = (priceDown && putVol > callVol) ? '#fbbf24' : '#22c55e';
-                } else {
-                    color = (priceUp && callVol > putVol) ? '#a855f7' : '#ef4444';
-                }
-                return { time: d.time, value: d.value, color };
-            });
+                    let color;
+                    if (d.value >= 0) {
+                        color = (priceDown && putVol > callVol) ? '#fbbf24' : '#22c55e';
+                    } else {
+                        color = (priceUp && callVol > putVol) ? '#a855f7' : '#ef4444';
+                    }
+                    return { time: d.time, value: d.value, color };
+                });
             velocitySeries.setData(coloredData);
             this.chartSeries.velocity = velocitySeries;
 
@@ -348,7 +354,7 @@ const TrainingChartView = {
             this.charts.netGex = netGexChart;
 
             const netGexSeries = netGexChart.addLineSeries({
-                priceScaleId: 'left',
+                priceScaleId: 'right',
                 lastValueVisible: false,
                 priceLineVisible: false,
                 lineWidth: 2,
@@ -360,9 +366,9 @@ const TrainingChartView = {
             else netGexChart.timeScale().fitContent();
         }
 
-        // 7. IV Chart
+        // 7. ATM IV Chart (green < 15%, yellow 15-25%, red > 25%)
         const ivContainer = getContainer('iv');
-        if (ivContainer && data.iv?.length > 0) {
+        if (ivContainer && data.atm_iv?.length > 0) {
             ivContainer.innerHTML = '';
             const ivChart = LightweightCharts.createChart(ivContainer, {
                 ...chartOptions,
@@ -372,12 +378,21 @@ const TrainingChartView = {
             this.charts.iv = ivChart;
 
             const ivSeries = ivChart.addLineSeries({
-                priceScaleId: 'left',
+                priceScaleId: 'right',
                 lastValueVisible: false,
                 priceLineVisible: false,
                 lineWidth: 2,
             });
-            ivSeries.setData(ChartUtils.colorizeIvData(data.iv));
+            // Color by IV level: green < 15%, yellow 15-25%, red > 25%
+            // Filter out null values to avoid chart errors
+            const coloredIvData = data.atm_iv
+                .filter(d => d.value != null)
+                .map(d => ({
+                    time: d.time,
+                    value: d.value,
+                    color: d.value < 15 ? '#22c55e' : d.value < 25 ? '#eab308' : '#ef4444'  // green-500 / yellow-500 / red-500
+                }));
+            ivSeries.setData(coloredIvData);
             this.chartSeries.iv = ivSeries;
 
             if (mainVisibleRange) ivChart.timeScale().setVisibleRange(mainVisibleRange);
@@ -398,7 +413,7 @@ const TrainingChartView = {
             this.charts.totalGex = totalGexChart;
 
             const totalGexSeries = totalGexChart.addHistogramSeries({
-                priceScaleId: 'left',
+                priceScaleId: 'right',
                 base: 0,
                 lastValueVisible: false,
                 priceLineVisible: false,
@@ -529,7 +544,7 @@ const TrainingChartView = {
             color,
             lineWidth,
             lineStyle,
-            priceScaleId: 'left',
+            priceScaleId: 'right',
             lastValueVisible: false,
             priceLineVisible: false,
             visible,
@@ -544,7 +559,7 @@ const TrainingChartView = {
             color,
             lineWidth: 1,
             lineStyle: 2,
-            priceScaleId: 'left',
+            priceScaleId: 'right',
             lastValueVisible: false,
             priceLineVisible: false,
             visible,

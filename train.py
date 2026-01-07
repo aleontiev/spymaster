@@ -1456,27 +1456,69 @@ def train_jepa(args: argparse.Namespace) -> None:
             all_files = all_files[:args.max_files]
 
         # Define canonical features to use (available in all normalized files)
+        # These are the core features for market candles (rows 8+)
         canonical_cols = [
+            # OHLCV
             "open", "high", "low", "close", "volume",
-            "atm_spread", "net_premium_flow", "implied_volatility",
-            "call_strikes_active", "put_strikes_active",
-            "atm_call_volume", "otm_call_volume",
-            "atm_put_volume", "otm_put_volume",
-            "net_gex", "net_dex",
+            # GEX/DEX flow
+            "net_gex", "net_dex", "gamma_flow", "delta_flow",
+            # Volatility
+            "implied_volatility", "atm_iv", "iv_skew_25d",
+            # Greeks
+            "vanna_net", "charm_net",
+            # Order flow (options)
+            "net_premium_flow",
+            # Order flow (stock)
+            "stock_buy_sell_ratio",
+            # Time
             "time_to_close", "sin_time", "cos_time",
         ]
 
+        # Number of premarket special candles to skip
+        # Rows 0-7 are: T-3 range, blank, T-2 range, blank, T-1 range, blank, PM range, blank
+        PREMARKET_ROWS = 8
+
         # Load and concatenate data
         day_tensors = []
+        premarket_tensors = []  # Store premarket context for each day
         dates = []
         for file_date, parquet_file in tqdm(all_files, desc="Loading normalized data", unit="day"):
             df = pd.read_parquet(parquet_file)
 
+            # Detect file format: 398 rows = has premarket, 390 rows = market only
+            has_premarket = len(df) > 390
+            premarket_offset = PREMARKET_ROWS if has_premarket else 0
+
+            # Extract premarket context (high/low from T-3, T-2, T-1, PM ranges)
+            # Rows 0, 2, 4, 6 contain the range candles (odd rows are blank)
+            premarket_highs = []
+            premarket_lows = []
+            if has_premarket:
+                for i in [0, 2, 4, 6]:  # T-3, T-2, T-1, PM
+                    if i < len(df):
+                        premarket_highs.append(df.iloc[i]["high"] if "high" in df.columns else 0.0)
+                        premarket_lows.append(df.iloc[i]["low"] if "low" in df.columns else 0.0)
+                    else:
+                        premarket_highs.append(0.0)
+                        premarket_lows.append(0.0)
+            else:
+                # No premarket data - use zeros
+                premarket_highs = [0.0, 0.0, 0.0, 0.0]
+                premarket_lows = [0.0, 0.0, 0.0, 0.0]
+            # Premarket context: [T-3_high, T-3_low, T-2_high, T-2_low, T-1_high, T-1_low, PM_high, PM_low]
+            premarket_context = []
+            for h, l in zip(premarket_highs, premarket_lows):
+                premarket_context.extend([h, l])
+            premarket_tensors.append(torch.tensor(premarket_context, dtype=torch.float32))
+
+            # Skip premarket rows if present - only use market hours (9:30 AM ET onwards)
+            market_df = df.iloc[premarket_offset:]
+
             # Select canonical columns, filling missing with 0
-            selected = pd.DataFrame(index=df.index)
+            selected = pd.DataFrame(index=market_df.index)
             for col in canonical_cols:
-                if col in df.columns:
-                    selected[col] = df[col].fillna(0)
+                if col in market_df.columns:
+                    selected[col] = market_df[col].fillna(0)
                 else:
                     selected[col] = 0.0
 
@@ -1489,11 +1531,12 @@ def train_jepa(args: argparse.Namespace) -> None:
         if dates:
             print(f"Date range: {dates[0]} to {dates[-1]}")
             print(f"Features: {len(canonical_cols)}")
-            print(f"Candles per day: {day_tensors[0].shape[0]}")
+            print(f"Market candles per day: {day_tensors[0].shape[0]} (excluded {PREMARKET_ROWS} premarket rows)")
+            print(f"Premarket context: {premarket_tensors[0].shape[0]} features (T-3/T-2/T-1/PM high/low)")
 
-        # Validate data quality
+        # Validate data quality (only market hours)
         all_data = torch.cat(day_tensors, dim=0)
-        print(f"\nData validation:")
+        print(f"\nData validation (market hours only):")
         for i, col in enumerate(canonical_cols):
             vals = all_data[:, i]
             zeros_pct = (vals == 0).float().mean().item() * 100
@@ -1509,7 +1552,7 @@ def train_jepa(args: argparse.Namespace) -> None:
         print(f"\nTrain: {split_idx} days")
         print(f"Val: {len(dates) - split_idx} days")
 
-        # Create simple sliding window datasets (no premarket for now)
+        # Create sliding window datasets from market hours only
         train_data = torch.cat(train_tensors, dim=0)
         val_data = torch.cat(val_tensors, dim=0)
 

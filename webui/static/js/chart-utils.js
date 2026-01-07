@@ -295,12 +295,15 @@ const ChartUtils = {
     },
 
     // Format Unix timestamp to ET time string
+    // Note: timestamps from the backend are already adjusted to display Eastern time
+    // (via _to_unix which shifts UTC timestamps by the ET offset)
+    // So we display them as UTC here since they're already "fake Eastern"
     formatTimeET(unixTimestamp) {
         const date = new Date(unixTimestamp * 1000);
         return date.toLocaleTimeString('en-US', {
             hour: '2-digit',
             minute: '2-digit',
-            timeZone: 'America/New_York',
+            timeZone: 'UTC',
             hour12: true
         });
     },
@@ -316,7 +319,8 @@ const ChartUtils = {
         // OHLCV section - check both 'ohlcv' and 'candles' keys
         const ohlcvData = data.ohlcv || data.candles;
         const ohlcvPoint = ohlcvData?.find(d => d.time === time);
-        if (ohlcvPoint) {
+        // Only render OHLCV if all values are present and valid
+        if (ohlcvPoint && ohlcvPoint.open != null && ohlcvPoint.high != null && ohlcvPoint.low != null && ohlcvPoint.close != null) {
             const change = ohlcvPoint.close - ohlcvPoint.open;
             const changeColor = change >= 0 ? 'text-green-400' : 'text-red-400';
             const changePct = ((change / ohlcvPoint.open) * 100).toFixed(2);
@@ -330,13 +334,13 @@ const ChartUtils = {
 
         // Volume
         const volPoint = data.volume?.find(d => d.time === time);
-        if (volPoint) {
+        if (volPoint && volPoint.value != null) {
             html += `<div class="flex justify-between gap-4"><span class="text-gray-400">Volume</span><span class="text-white font-mono">${this.formatLargeNumber(volPoint.value)}</span></div>`;
         }
 
         // Imbalance (Stock OFI)
         const ofiPoint = data.stock_ofi?.find(d => d.time === time);
-        if (ofiPoint) {
+        if (ofiPoint && ofiPoint.value != null) {
             const ofiColor = ofiPoint.value >= 0 ? 'text-green-400' : 'text-red-400';
             const ofiSign = ofiPoint.value >= 0 ? '+' : '';
             html += `<div class="flex justify-between gap-4"><span class="text-gray-400">Imbalance</span><span class="${ofiColor} font-mono">${ofiSign}${this.formatLargeNumber(ofiPoint.value)}</span></div>`;
@@ -344,25 +348,25 @@ const ChartUtils = {
 
         // GEX
         const gexPoint = data.net_gex?.find(d => d.time === time);
-        if (gexPoint) {
+        if (gexPoint && gexPoint.value != null) {
             const gexColor = gexPoint.value >= 1e9 ? 'text-green-400' : gexPoint.value >= 0 ? 'text-yellow-400' : 'text-red-400';
             html += `<div class="flex justify-between gap-4"><span class="text-gray-400">GEX</span><span class="${gexColor} font-mono">${this.formatLargeNumber(gexPoint.value)}</span></div>`;
         }
 
-        // IV
-        const ivPoint = data.iv?.find(d => d.time === time);
-        if (ivPoint) {
-            const ivColor = ivPoint.value < 20 ? 'text-green-400' : ivPoint.value < 30 ? 'text-yellow-400' : 'text-red-400';
-            html += `<div class="flex justify-between gap-4"><span class="text-gray-400">IV</span><span class="${ivColor} font-mono">${ivPoint.value.toFixed(1)}%</span></div>`;
+        // ATM IV
+        const atmIvPoint = data.atm_iv?.find(d => d.time === time);
+        if (atmIvPoint && atmIvPoint.value != null) {
+            const ivColor = atmIvPoint.value < 15 ? 'text-green-400' : atmIvPoint.value < 25 ? 'text-yellow-400' : 'text-red-400';
+            html += `<div class="flex justify-between gap-4"><span class="text-gray-400">ATM IV</span><span class="${ivColor} font-mono">${atmIvPoint.value.toFixed(1)}%</span></div>`;
         }
 
         // Options flow
         const callVol = data.call_volume?.find(d => d.time === time);
         const putVol = data.put_volume?.find(d => d.time === time);
-        if (callVol || putVol) {
+        if ((callVol && callVol.value != null) || (putVol && putVol.value != null)) {
             html += `<div class="mt-2 pt-2 border-t border-neutral-600">`;
-            if (callVol) html += `<div class="flex justify-between gap-4"><span class="text-green-400">Calls</span><span class="font-mono">${this.formatLargeNumber(callVol.value)}</span></div>`;
-            if (putVol) html += `<div class="flex justify-between gap-4"><span class="text-red-400">Puts</span><span class="font-mono">${this.formatLargeNumber(Math.abs(putVol.value))}</span></div>`;
+            if (callVol && callVol.value != null) html += `<div class="flex justify-between gap-4"><span class="text-green-400">Calls</span><span class="font-mono">${this.formatLargeNumber(callVol.value)}</span></div>`;
+            if (putVol && putVol.value != null) html += `<div class="flex justify-between gap-4"><span class="text-red-400">Puts</span><span class="font-mono">${this.formatLargeNumber(Math.abs(putVol.value))}</span></div>`;
             html += `</div>`;
         }
 

@@ -300,14 +300,8 @@ def data_load(
 
     elif rebuild:
         dates_to_process = available_dates
-        if not dry_run:
-            deleted_count = 0
-            for d in dates_to_process:
-                if d in cached_dates:
-                    loader.delete_file(dataset_id, underlying, d)
-                    deleted_count += 1
-            if deleted_count > 0:
-                console.print(f"[dim]Deleted {deleted_count} existing files for rebuild[/dim]")
+        # Note: files are deleted just before each date is rebuilt (not upfront)
+        # This preserves data if the job is cancelled partway through
 
     elif force:
         dates_to_process = available_dates
@@ -343,140 +337,187 @@ def data_load(
     # Process based on dataset type
     if is_thetadata_source and dataset_id == "option-trades-1m":
         # ThetaData source - requires async client
+        from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, SpinnerColumn
+
         async def process_thetadata():
-            from src.data.thetadata_client import ThetaDataClient
-            from src.data.gex_flow_engine import GEXFlowEngine
+            from src.data.thetadata_client import ThetaDataClient, ThetaDataAPIError
 
             client = ThetaDataClient()
-            engine = GEXFlowEngine()
 
-            console.print("[dim]Checking ThetaData terminal...[/dim]")
             if not await client._check_terminal_running():
                 console.print("[red]ThetaData terminal not running! Start with: java -jar ThetaTerminalv3.jar[/red]")
                 return
 
-            console.print("[green]Terminal running. Starting processing...[/green]\n")
-
             success, fail = 0, 0
-            for i, d in enumerate(dates_to_process, 1):
-                console.print(f"[{i}/{len(dates_to_process)}] Processing {d}...")
 
+            for d in dates_to_process:
                 try:
-                    stocks_df = loader.load_single_file("stocks-1m", underlying, d)
-                    if stocks_df is None or stocks_df.empty:
-                        console.print(f"  [yellow]No stock data, skipping[/yellow]")
-                        fail += 1
-                        continue
+                    # Delete existing file just before rebuild (preserves data if job cancelled)
+                    if rebuild:
+                        loader.delete_file(dataset_id, underlying, d)
 
-                    if "timestamp" not in stocks_df.columns and "window_start" in stocks_df.columns:
-                        stocks_df = stocks_df.rename(columns={"window_start": "timestamp"})
-                    if "timestamp" in stocks_df.columns:
-                        stocks_df["timestamp"] = pd.to_datetime(stocks_df["timestamp"])
-
-                    oi_df = loader.load_single_file("oi-day", underlying, d)
-                    if oi_df is None or oi_df.empty:
-                        console.print("  [dim]Fetching OI...[/dim]")
-                        oi_df = await client.fetch_open_interest_for_date(d, underlying, zero_dte=True)
-                        if not oi_df.empty:
-                            loader.save_to_cache(oi_df, "oi-day", underlying, d)
-
-                    greeks_df = loader.load_single_file("greeks-1m", underlying, d)
-                    if greeks_df is None or greeks_df.empty:
-                        console.print("  [dim]Fetching Greeks...[/dim]")
-                        greeks_df = await client.fetch_greeks_for_date(d, underlying, interval="1m", zero_dte=True)
-                        if not greeks_df.empty:
-                            loader.save_to_cache(greeks_df, "greeks-1m", underlying, d)
-
-                    if greeks_df is None or greeks_df.empty:
-                        console.print(f"  [yellow]No Greeks, skipping[/yellow]")
-                        fail += 1
-                        continue
-
-                    # Check for existing data (incremental loading)
-                    existing_trade_agg_df = None
-                    resume_from = None
-                    if not force:
-                        try:
-                            existing_trade_agg_df = loader.load_single_file("option-trades-1m", underlying, d)
-                            if existing_trade_agg_df is not None and not existing_trade_agg_df.empty and "timestamp" in existing_trade_agg_df.columns:
-                                resume_from = existing_trade_agg_df["timestamp"].max()
-                                console.print(f"  [dim](resuming from {resume_from.strftime('%H:%M')})[/dim]")
-                        except Exception:
-                            pass  # No existing file, fetch full day
-
-                    trade_agg_df = existing_trade_agg_df
-                    if trade_agg_df is None or trade_agg_df.empty or resume_from is not None:
-                        console.print("  [dim]Fetching trade+quote data...[/dim]")
-                        trade_quotes_df = await client.fetch_trade_quotes_parallel(
-                            d, underlying, zero_dte=True, concurrent_requests=concurrent,
-                            resume_from=resume_from
+                    with Progress(
+                        SpinnerColumn(),
+                        TextColumn("[blue]{task.fields[date]}[/blue]"),
+                        BarColumn(bar_width=30),
+                        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                        TextColumn("[dim]{task.fields[status]}[/dim]"),
+                        TimeElapsedColumn(),
+                        console=console,
+                        transient=False,
+                    ) as progress:
+                        task = progress.add_task(
+                            f"Processing {d}",
+                            total=100,
+                            date=str(d),
+                            status="loading stocks...",
                         )
 
-                        new_trade_agg_df = pd.DataFrame()
-                        if not trade_quotes_df.empty:
-                            df = trade_quotes_df.copy()
-                            df["sign"] = 0
-                            price = df["price"].values
-                            bid = df["bid"].values
-                            ask = df["ask"].values
-                            df.loc[price >= ask, "sign"] = -1
-                            df.loc[price <= bid, "sign"] = 1
+                        # Step 1: Load stock data (5%)
+                        stocks_df = loader.load_single_file("stocks-1m", underlying, d)
+                        if stocks_df is None or stocks_df.empty:
+                            progress.update(task, completed=100, status="[yellow]no stock data[/yellow]")
+                            fail += 1
+                            continue
 
-                            ts_col = "trade_timestamp" if "trade_timestamp" in df.columns else "timestamp"
-                            df["minute"] = pd.to_datetime(df[ts_col]).dt.floor("min")
-                            df["buy_volume"] = np.where(df["sign"] == -1, df["size"], 0)
-                            df["sell_volume"] = np.where(df["sign"] == 1, df["size"], 0)
-                            if "right" in df.columns:
-                                df["right"] = df["right"].str.lower()
+                        if "timestamp" not in stocks_df.columns and "window_start" in stocks_df.columns:
+                            stocks_df = stocks_df.rename(columns={"window_start": "timestamp"})
+                        if "timestamp" in stocks_df.columns:
+                            stocks_df["timestamp"] = pd.to_datetime(stocks_df["timestamp"])
 
-                            # Aggregate with OHLC prices for consolidated dataset
-                            new_trade_agg_df = df.groupby(["minute", "strike", "right"]).agg({
-                                "price": ["first", "max", "min", "last"],
-                                "buy_volume": "sum",
-                                "sell_volume": "sum",
-                                "size": ["sum", "count"],
-                            }).reset_index()
-                            # Flatten multi-level columns
-                            new_trade_agg_df.columns = [
-                                "timestamp", "strike", "right",
-                                "open", "high", "low", "close",
-                                "buy_volume", "sell_volume",
-                                "volume", "trade_count"
-                            ]
-                            new_trade_agg_df["ticker"] = underlying
+                        progress.update(task, completed=5, status="checking existing...")
 
-                        # Merge with existing data if we have both
-                        if not new_trade_agg_df.empty:
-                            if existing_trade_agg_df is not None and not existing_trade_agg_df.empty:
-                                # Concatenate and sort by timestamp to maintain order invariant
-                                trade_agg_df = pd.concat([existing_trade_agg_df, new_trade_agg_df], ignore_index=True)
-                                trade_agg_df = trade_agg_df.drop_duplicates(subset=["timestamp", "strike", "right"], keep="last")
-                                trade_agg_df = trade_agg_df.sort_values("timestamp").reset_index(drop=True)
-                            else:
-                                # Sort new data to ensure timestamp order invariant
-                                trade_agg_df = new_trade_agg_df.sort_values("timestamp").reset_index(drop=True)
-                            loader.save_to_cache(trade_agg_df, "option-trades-1m", underlying, d)
-                        elif existing_trade_agg_df is not None and not existing_trade_agg_df.empty:
-                            # No new data but we have existing - use that
-                            trade_agg_df = existing_trade_agg_df
+                        # Step 2: Check existing trade data
+                        existing_trade_agg_df = None
+                        resume_from = None
+                        if not force:
+                            try:
+                                existing_trade_agg_df = loader.load_single_file("option-trades-1m", underlying, d)
+                                if existing_trade_agg_df is not None and not existing_trade_agg_df.empty and "timestamp" in existing_trade_agg_df.columns:
+                                    resume_from = existing_trade_agg_df["timestamp"].max()
+                            except Exception:
+                                pass
 
-                    console.print("  [dim]Computing GEX flow features...[/dim]")
-                    features_df = engine.compute_flow_features(
-                        greeks_df, trade_agg_df, stocks_df,
-                        daily_oi_df=oi_df if oi_df is not None else pd.DataFrame()
-                    )
+                        progress.update(task, completed=10)
 
-                    if features_df.empty:
-                        console.print(f"  [yellow]No features computed[/yellow]")
-                        fail += 1
-                        continue
+                        # Step 3: Fetch trade+quote data in 120-minute batches (10% -> 95%)
+                        trade_agg_df = existing_trade_agg_df
+                        total_rows = len(existing_trade_agg_df) if existing_trade_agg_df is not None else 0
+                        all_new_batches = []
 
-                    path = loader.save_to_cache(features_df, dataset_id, underlying, d)
-                    console.print(f"  [green]Saved {len(features_df)} rows[/green]")
-                    success += 1
+                        if trade_agg_df is None or trade_agg_df.empty or resume_from is not None:
+                            # Determine expiration: try 0DTE first, fallback to all expirations
+                            # (ThetaData API quirk: specific expiration queries may fail with 472
+                            # even when data exists, but expiration=* works)
+                            use_zero_dte = True
+                            filter_to_nearest_exp = False
+                            progress.update(task, status="checking expiration...")
+                            try:
+                                # Probe 0DTE with a single minute fetch
+                                probe_df = await client.fetch_trade_quotes(
+                                    d, underlying, zero_dte=True,
+                                    start_time="09:30:00", end_time="09:31:00"
+                                )
+                                if probe_df is None or probe_df.empty:
+                                    raise ThetaDataAPIError("No 0DTE data")
+                            except ThetaDataAPIError:
+                                # 0DTE query failed, fetch all expirations and filter later
+                                use_zero_dte = False
+                                filter_to_nearest_exp = True
+
+                            resume_str = f" from {resume_from.strftime('%H:%M')}" if resume_from else ""
+                            exp_str = " (nearest exp)" if filter_to_nearest_exp else ""
+                            progress.update(task, status=f"fetching{resume_str}{exp_str}...")
+
+                            def update_batch_progress(batch_num, total_batches, minutes_done, total_minutes):
+                                # Map 10% to 95% range based on minutes progress
+                                if total_minutes > 0:
+                                    pct = 10 + (minutes_done / total_minutes) * 85  # 10% to 95%
+                                    progress.update(task, completed=pct, status=f"{minutes_done}/{total_minutes} min")
+
+                            async for batch_df in client.fetch_trade_quotes_batched(
+                                d, underlying,
+                                zero_dte=use_zero_dte,
+                                concurrent_requests=concurrent,
+                                resume_from=resume_from,
+                                batch_minutes=120,
+                                progress_callback=update_batch_progress
+                            ):
+                                if batch_df.empty:
+                                    continue
+
+                                # Filter to nearest expiration if needed
+                                df = batch_df.copy()
+                                if filter_to_nearest_exp and "expiration" in df.columns:
+                                    # Find the nearest expiration (prefer 0DTE, then closest future)
+                                    unique_exps = pd.to_datetime(df["expiration"]).dt.date.unique()
+                                    query_date = d
+                                    nearest = None
+                                    for exp in sorted(unique_exps):
+                                        if exp >= query_date:
+                                            nearest = exp
+                                            break
+                                    if nearest is not None:
+                                        df = df[pd.to_datetime(df["expiration"]).dt.date == nearest]
+                                    if df.empty:
+                                        continue
+
+                                # Aggregate this batch
+                                df["sign"] = 0
+                                price = df["price"].values
+                                bid = df["bid"].values
+                                ask = df["ask"].values
+                                df.loc[price >= ask, "sign"] = -1
+                                df.loc[price <= bid, "sign"] = 1
+
+                                ts_col = "trade_timestamp" if "trade_timestamp" in df.columns else "timestamp"
+                                df["minute"] = pd.to_datetime(df[ts_col]).dt.floor("min")
+                                df["buy_volume"] = np.where(df["sign"] == -1, df["size"], 0)
+                                df["sell_volume"] = np.where(df["sign"] == 1, df["size"], 0)
+                                if "right" in df.columns:
+                                    df["right"] = df["right"].str.lower()
+
+                                batch_agg_df = df.groupby(["minute", "strike", "right"]).agg({
+                                    "price": ["first", "max", "min", "last"],
+                                    "buy_volume": "sum",
+                                    "sell_volume": "sum",
+                                    "size": ["sum", "count"],
+                                }).reset_index()
+                                batch_agg_df.columns = [
+                                    "timestamp", "strike", "right",
+                                    "open", "high", "low", "close",
+                                    "buy_volume", "sell_volume",
+                                    "volume", "trade_count"
+                                ]
+                                batch_agg_df["ticker"] = underlying
+
+                                all_new_batches.append(batch_agg_df)
+                                total_rows = (len(existing_trade_agg_df) if existing_trade_agg_df is not None else 0) + \
+                                            sum(len(b) for b in all_new_batches)
+                                progress.update(task, status=f"{total_rows} rows")
+
+                                # Save incrementally after each batch
+                                if all_new_batches:
+                                    new_df = pd.concat(all_new_batches, ignore_index=True)
+                                    new_df = new_df.drop_duplicates(subset=["timestamp", "strike", "right"], keep="last")
+                                    new_df = new_df.sort_values("timestamp").reset_index(drop=True)
+
+                                    if existing_trade_agg_df is not None and not existing_trade_agg_df.empty:
+                                        combined_df = pd.concat([existing_trade_agg_df, new_df], ignore_index=True)
+                                        combined_df = combined_df.drop_duplicates(subset=["timestamp", "strike", "right"], keep="last")
+                                        combined_df = combined_df.sort_values("timestamp").reset_index(drop=True)
+                                        loader.save_to_cache(combined_df, "option-trades-1m", underlying, d)
+                                        trade_agg_df = combined_df
+                                    else:
+                                        loader.save_to_cache(new_df, "option-trades-1m", underlying, d)
+                                        trade_agg_df = new_df
+                                    total_rows = len(trade_agg_df)
+
+                        progress.update(task, completed=100, status=f"✓ {total_rows} rows")
+                        success += 1
 
                 except Exception as e:
-                    console.print(f"  [red]Error: {e}[/red]")
+                    console.print(f"[blue]{d}[/blue] [red]Error: {e}[/red]")
                     fail += 1
 
             console.print(f"\n[bold]Complete:[/bold] {success} succeeded, {fail} failed")
@@ -486,14 +527,18 @@ def data_load(
     elif is_alpaca_source and dataset_id == "stock-trades-1m":
         # Alpaca source - fetch stock trades with Lee-Ready classification
         from src.data.providers.alpaca import AlpacaProvider
+        from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, SpinnerColumn
 
         provider = AlpacaProvider()
         success = 0
         fail = 0
 
         for d in dates_to_process:
-            console.print(f"[blue]{d}[/blue]", end=" ")
             try:
+                # Delete existing file just before rebuild (preserves data if job cancelled)
+                if rebuild:
+                    loader.delete_file(dataset_id, underlying, d)
+
                 # Check for existing data (incremental loading)
                 existing_df = None
                 resume_from = None
@@ -502,37 +547,78 @@ def data_load(
                         existing_df = loader.load_single_file(dataset_id, underlying, d)
                         if existing_df is not None and not existing_df.empty and "timestamp" in existing_df.columns:
                             resume_from = existing_df["timestamp"].max()
-                            console.print(f"[dim](resuming from {resume_from.strftime('%H:%M')})[/dim] ", end="")
                     except Exception:
                         pass  # No existing file, fetch full day
 
-                # Fetch new data (incremental if resume_from is set)
-                new_df = provider.fetch_stock_trade_quote_1m(underlying, d, resume_from=resume_from)
+                # Use batched fetching with progress bar
+                all_batches = []
+                total_rows = 0
 
-                if new_df is not None and not new_df.empty:
-                    # Merge with existing data if we have both
-                    if existing_df is not None and not existing_df.empty:
-                        # Concatenate and sort by timestamp to maintain order invariant
-                        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-                        combined_df = combined_df.drop_duplicates(subset=["timestamp"], keep="last")
-                        combined_df = combined_df.sort_values("timestamp").reset_index(drop=True)
-                        loader.save_to_cache(combined_df, dataset_id, underlying, d)
-                        console.print(f"[green]✓ {len(combined_df)} rows (+{len(new_df)} new)[/green]")
-                    else:
-                        # Sort new data to ensure timestamp order invariant
-                        new_df = new_df.sort_values("timestamp").reset_index(drop=True)
-                        loader.save_to_cache(new_df, dataset_id, underlying, d)
-                        console.print(f"[green]✓ {len(new_df)} rows[/green]")
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[blue]{task.fields[date]}[/blue]"),
+                    BarColumn(bar_width=30),
+                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                    TextColumn("[dim]{task.fields[status]}[/dim]"),
+                    TimeElapsedColumn(),
+                    console=console,
+                    transient=False,
+                ) as progress:
+                    resume_str = f" (from {resume_from.strftime('%H:%M')})" if resume_from else ""
+                    task = progress.add_task(
+                        f"Fetching {d}",
+                        total=390,  # ~390 minutes in trading day
+                        date=str(d),
+                        status=f"starting{resume_str}...",
+                    )
+
+                    def update_progress(batch_num, total_batches, minutes_done, total_minutes):
+                        progress.update(
+                            task,
+                            completed=minutes_done,
+                            total=total_minutes,
+                        )
+
+                    for batch_df in provider.fetch_stock_trade_quote_1m_batched(
+                        underlying, d,
+                        resume_from=resume_from,
+                        batch_minutes=5,
+                        progress_callback=update_progress,
+                    ):
+                        all_batches.append(batch_df)
+                        total_rows += len(batch_df)
+
+                        # Update status with row count
+                        progress.update(task, status=f"{total_rows} rows")
+
+                        # Commit incrementally: merge and save after each batch
+                        if all_batches:
+                            new_df = pd.concat(all_batches, ignore_index=True)
+                            new_df = new_df.drop_duplicates(subset=["timestamp"], keep="last")
+                            new_df = new_df.sort_values("timestamp").reset_index(drop=True)
+
+                            if existing_df is not None and not existing_df.empty:
+                                combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+                                combined_df = combined_df.drop_duplicates(subset=["timestamp"], keep="last")
+                                combined_df = combined_df.sort_values("timestamp").reset_index(drop=True)
+                                loader.save_to_cache(combined_df, dataset_id, underlying, d)
+                            else:
+                                loader.save_to_cache(new_df, dataset_id, underlying, d)
+
+                    # Final status
+                    progress.update(task, completed=390, status=f"✓ {total_rows} rows")
+
+                if all_batches:
                     success += 1
                 elif existing_df is not None and not existing_df.empty:
-                    # No new data but we have existing data - already synced
-                    console.print(f"[cyan]✓ {len(existing_df)} rows (up to date)[/cyan]")
+                    console.print(f"[blue]{d}[/blue] [cyan]✓ {len(existing_df)} rows (up to date)[/cyan]")
                     success += 1
                 else:
-                    console.print("[yellow]No data[/yellow]")
+                    console.print(f"[blue]{d}[/blue] [yellow]No data[/yellow]")
                     fail += 1
+
             except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
+                console.print(f"[blue]{d}[/blue] [red]Error: {e}[/red]")
                 fail += 1
 
         console.print(f"\n[bold]Complete:[/bold] {success} succeeded, {fail} failed")
@@ -548,6 +634,10 @@ def data_load(
         fail_count = 0
 
         for d in dates_to_process:
+            # Delete existing file just before rebuild (preserves data if job cancelled)
+            if rebuild:
+                loader.delete_file(dataset_id, underlying, d)
+
             resolution_tree = loader.build_resolution_tree(dataset_id, underlying, d, force_recompute=force, show_all_deps=True)
             tree_node = convert_resolution_node_to_tree_node(resolution_tree, force_recompute=force)
 

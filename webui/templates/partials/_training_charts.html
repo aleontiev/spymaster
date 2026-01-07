@@ -39,66 +39,48 @@
 
 <!-- 3. Imbalance Chart (Stock OFI) -->
 <div x-show="!chartZoomed && chartData?.stock_ofi?.length > 0" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="imbalance">
-    <div class="absolute top-1 left-1 z-10 pointer-events-none flex items-center gap-2">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none">
         <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">Imbalance</span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-green-500 rounded"></span> Buy</span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-red-500 rounded"></span> Sell</span>
     </div>
     <div id="market-pressure-chart" class="w-full h-full bg-neutral-950"></div>
 </div>
 
 <!-- 4. Options Flow (Call/Put Volume) -->
 <div x-show="!chartZoomed && chartData?.call_volume?.length > 0" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="flow">
-    <div class="absolute top-1 left-1 z-10 pointer-events-none flex items-center gap-2">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none">
         <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">Options</span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-green-500 rounded"></span> Calls</span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-red-500 rounded"></span> Puts</span>
     </div>
     <div id="flow-chart" class="w-full h-full bg-neutral-950"></div>
 </div>
 
 <!-- 5. Pressure Chart (Velocity/Hedging Pressure) -->
 <div x-show="!chartZoomed && chartData?.market_velocity?.length > 0" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="velocity">
-    <div class="absolute top-1 left-1 z-10 pointer-events-none flex items-center gap-2">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none">
         <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">Pressure</span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-green-500 rounded"></span></span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-red-500 rounded"></span></span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-amber-400 rounded"></span></span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-purple-500 rounded"></span></span>
     </div>
     <div id="velocity-chart" class="w-full h-full bg-neutral-950"></div>
 </div>
 
 <!-- 6. GEX Chart -->
 <div x-show="!chartZoomed && chartData?.net_gex?.length > 0" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="gex">
-    <div class="absolute top-1 left-1 z-10 pointer-events-none flex items-center gap-2">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none">
         <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">GEX</span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-green-500 rounded"></span></span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-yellow-400 rounded"></span></span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-orange-500 rounded"></span></span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-red-500 rounded"></span></span>
     </div>
     <div id="net-gex-chart" class="w-full h-full bg-neutral-950"></div>
 </div>
 
-<!-- 7. IV Chart -->
-<div x-show="!chartZoomed && chartData?.iv?.length > 0" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="iv">
-    <div class="absolute top-1 left-1 z-10 pointer-events-none flex items-center gap-2">
-        <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">IV</span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-green-500 rounded"></span></span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-yellow-400 rounded"></span></span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-orange-500 rounded"></span></span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-red-500 rounded"></span></span>
+<!-- 7. ATM IV Chart -->
+<div x-show="!chartZoomed && chartData?.atm_iv?.length > 0" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="iv">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none">
+        <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded">ATM IV</span>
     </div>
     <div id="iv-chart" class="w-full h-full bg-neutral-950"></div>
 </div>
 
 <!-- 8. GEX Regime Strength Chart -->
 <div x-show="!chartZoomed && (chartData?.gex_regime_strength?.length > 0 || chartData?.total_gex?.length > 0)" class="relative" style="flex: 1 1 0%; min-height: 50px;" data-chart-row="total-gex">
-    <div class="absolute top-1 left-1 z-10 pointer-events-none flex items-center gap-2">
+    <div class="absolute top-1 left-1 z-10 pointer-events-none">
         <span class="text-xs text-gray-500 bg-neutral-950/80 px-1 rounded" x-text="chartData?.gex_regime_strength ? 'Regime' : 'Total GEX'">Regime</span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-green-500 rounded"></span> +Γ</span>
-        <span class="text-xs flex items-center gap-1 bg-neutral-950/80 px-1 rounded"><span class="w-2 h-2 bg-red-500 rounded"></span> -Γ</span>
     </div>
     <div id="total-gex-chart" class="w-full h-full bg-neutral-950"></div>
 </div>

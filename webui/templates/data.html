@@ -1741,6 +1741,27 @@ function dataBrowser() {
             if (val === null || val === undefined) return '-';
             if (typeof val === 'number') return val.toFixed(4);
             return val;
+        },
+
+        // Get chart title from file path: "SPY 2026-01-06" format
+        // Path format: data/<dataset>/<underlying>/<year-month>/<day>.parquet
+        getChartTitle() {
+            if (!this.selectedFile?.path) return 'Chart';
+            const parts = this.selectedFile.path.split('/');
+            if (parts.length < 4) return this.selectedFile.name || 'Chart';
+
+            // Extract underlying (e.g., "SPY") and date components
+            const filename = parts[parts.length - 1];  // "06.parquet"
+            const yearMonth = parts[parts.length - 2]; // "2026-01"
+            const underlying = parts[parts.length - 3]; // "SPY"
+
+            // Get day from filename (remove .parquet extension)
+            const day = filename.replace('.parquet', '').padStart(2, '0');
+
+            // Build full date string
+            const fullDate = `${yearMonth}-${day}`;
+
+            return `${underlying} ${fullDate}`;
         }
     }
 }

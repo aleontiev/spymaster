@@ -967,14 +967,16 @@ def _chart_data_stocks(df: pd.DataFrame, file_path: str) -> Any:
     cumulative_vol = df['volume'].cumsum()
     df['vwap'] = cumulative_tp_vol / cumulative_vol.replace(0, np.nan)
 
-    # Build OHLCV data
+    # Build OHLCV data - filter out rows with NaN values
     ohlcv = [{"time": _to_unix(row[time_col]), "open": float(row['open']),
               "high": float(row['high']), "low": float(row['low']), "close": float(row['close'])}
-             for _, row in df.iterrows()]
+             for _, row in df.iterrows()
+             if pd.notna(row['open']) and pd.notna(row['high']) and pd.notna(row['low']) and pd.notna(row['close'])]
 
     volume = [{"time": _to_unix(row[time_col]), "value": float(row['volume']),
                "color": "#26a69a" if row['close'] >= row['open'] else "#ef5350"}
-              for _, row in df.iterrows()]
+              for _, row in df.iterrows()
+              if pd.notna(row['open']) and pd.notna(row['close']) and pd.notna(row['volume'])]
 
     vwap = [{"time": _to_unix(row[time_col]), "value": float(row['vwap'])}
             for _, row in df.iterrows() if not pd.isna(row['vwap'])]
@@ -1218,7 +1220,7 @@ def _chart_data_gex_flow(df: pd.DataFrame, file_path: str) -> Any:
 
     # Other metrics
     gamma_sentiment = build_series('gamma_sentiment_ratio')
-    iv_data = build_series('implied_volatility', scale=100)  # Convert to percentage
+    atm_iv_data = build_series('atm_iv', scale=100)  # ATM IV as percentage
     vwap_z = build_series('anchored_vwap_z')
 
     # GEX level prices for overlay on price chart
@@ -1272,7 +1274,7 @@ def _chart_data_gex_flow(df: pd.DataFrame, file_path: str) -> Any:
         "net_delta_flow": net_delta_flow,
         "dist_to_zero_dex": dist_to_zero_dex,
         "gamma_sentiment": gamma_sentiment,
-        "iv": iv_data,
+        "atm_iv": atm_iv_data,
         "vwap_z": vwap_z,
         # GEX level prices for overlay on price chart
         "zero_gex_level": zero_gex_level,
@@ -1439,10 +1441,12 @@ def _chart_data_training_raw(df: pd.DataFrame, file_path: str) -> Any:
 
     if has_ohlcv and len(market_df) > 0:
         # OHLCV data - market hours only
+        # Filter out rows with zero/NaN OHLC values (causes "Value is null" error in charts)
         result["ohlcv"] = [{"time": _to_unix(row[time_col]), "open": float(row['open']),
                            "high": float(row['high']), "low": float(row['low']), "close": float(row['close'])}
                           for _, row in market_df.iterrows()
-                          if row['open'] > 0 and row['high'] > 0]  # Filter out zero bars
+                          if pd.notna(row['open']) and pd.notna(row['high']) and pd.notna(row['low']) and pd.notna(row['close'])
+                          and row['open'] > 0 and row['high'] > 0]
         # Volume bars with daily high highlighting
         # Gold (#FFD700) for green bars that are current daily high
         # Purple (#9333EA) for red bars that are current daily high
@@ -1450,7 +1454,8 @@ def _chart_data_training_raw(df: pd.DataFrame, file_path: str) -> Any:
         volume_data = []
         max_volume_so_far = 0.0
         for idx, (_, row) in enumerate(market_df.iterrows()):
-            if row['open'] <= 0:
+            # Skip rows with NaN or invalid values
+            if pd.isna(row['open']) or pd.isna(row['close']) or pd.isna(row['volume']) or row['open'] <= 0:
                 continue
             vol = float(row['volume'])
             is_up = row['close'] >= row['open']
@@ -1581,10 +1586,10 @@ def _chart_data_training_raw(df: pd.DataFrame, file_path: str) -> Any:
             for _, row in df_features.iterrows() if not pd.isna(row['net_dex'])
         ]
 
-    # IV
-    if 'implied_volatility' in df_features.columns:
-        result["iv"] = [{"time": _to_unix(row[time_col]), "value": float(row['implied_volatility']) * 100}
-                       for _, row in df_features.iterrows() if not pd.isna(row['implied_volatility'])]
+    # ATM IV (At The Money Implied Volatility)
+    if 'atm_iv' in df_features.columns:
+        result["atm_iv"] = [{"time": _to_unix(row[time_col]), "value": float(row['atm_iv']) * 100}
+                       for _, row in df_features.iterrows() if not pd.isna(row['atm_iv'])]
 
     # GEX price levels for charting (use new direct price fields, fall back to distance-based if not available)
     # Zero GEX level
@@ -1862,15 +1867,18 @@ def _chart_data_ohlcv(df: pd.DataFrame, file_path: str) -> Any:
 
     df = df.sort_values(time_col)
 
+    # Filter out rows with NaN values
     ohlcv = [{"time": _to_unix(row[time_col]), "open": float(row['open']),
               "high": float(row['high']), "low": float(row['low']), "close": float(row['close'])}
-             for _, row in df.iterrows()]
+             for _, row in df.iterrows()
+             if pd.notna(row['open']) and pd.notna(row['high']) and pd.notna(row['low']) and pd.notna(row['close'])]
 
     volume = []
     if 'volume' in df.columns:
         volume = [{"time": _to_unix(row[time_col]), "value": float(row['volume']),
                    "color": "#26a69a" if row['close'] >= row['open'] else "#ef5350"}
-                  for _, row in df.iterrows()]
+                  for _, row in df.iterrows()
+                  if pd.notna(row['open']) and pd.notna(row['close']) and pd.notna(row['volume'])]
 
     return jsonify({
         "path": file_path,
@@ -2880,17 +2888,20 @@ def api_charts_ohlcv():
             candles = []
             volume = []
             for _, row in df.iterrows():
+                # Skip rows with incomplete OHLC data (causes "Value is null" error in charts)
+                if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
+                    continue
                 ts = int(row[time_col].timestamp())
-                o = float(row["open"]) if pd.notna(row["open"]) else None
-                h = float(row["high"]) if pd.notna(row["high"]) else None
-                l = float(row["low"]) if pd.notna(row["low"]) else None
-                c = float(row["close"]) if pd.notna(row["close"]) else None
+                o = float(row["open"])
+                h = float(row["high"])
+                l = float(row["low"])
+                c = float(row["close"])
                 v = float(row.get("volume", 0)) if pd.notna(row.get("volume", 0)) else 0
                 candles.append({"time": ts, "open": o, "high": h, "low": l, "close": c})
                 volume.append({
                     "time": ts,
                     "value": v,
-                    "color": "rgba(34, 197, 94, 0.5)" if c and o and c >= o else "rgba(239, 68, 68, 0.5)"
+                    "color": "rgba(34, 197, 94, 0.5)" if c >= o else "rgba(239, 68, 68, 0.5)"
                 })
 
             return jsonify({
