@@ -26,7 +26,7 @@ from src.workers.model_registry import ModelRegistry, ModelType
 from src.workers.graph_executor import ModelGraphExecutor, GraphNode
 from src.workers.loader_worker import load_minute_for_strategy
 from src.model.policy import EntryAction, ExitAction
-from src.data.loader import NORMALIZED_CACHE_DIR
+from src.data.dag.loader import NORMALIZED_CACHE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +324,7 @@ class StrategyRunner:
             return []
 
         # Load full day's data for context (needed for patch creation)
-        from src.data.loader import CACHE_VERSION
+        from src.data.dag.loader import CACHE_VERSION
         cache_path = self.cache_dir / f"{self.underlying}_{CACHE_VERSION}_{target_date}.parquet"
 
         if not cache_path.exists():

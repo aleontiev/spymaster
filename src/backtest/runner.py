@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
+import pytz
 import torch
 
 from src.backtest.engine import (
@@ -34,7 +35,67 @@ from src.backtest.engine import (
 )
 from src.backtest.report import generate_html_report
 from src.data.processing import MarketPatch
-from src.data.loader import load_normalized_data
+
+
+def load_normalized_from_cache(
+    underlying: str = "SPY",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Load normalized data directly from cache without DAG validation/sync.
+
+    This is faster than the full DAG loader since it doesn't try to
+    validate dependencies or sync missing data from external services.
+    """
+    cache_dir = Path(f"data/training-1m-normalized/{underlying}")
+
+    if not cache_dir.exists():
+        raise FileNotFoundError(f"Normalized cache directory not found: {cache_dir}")
+
+    # Parse dates
+    start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
+    end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None
+
+    # Find all parquet files
+    dfs = []
+    for month_dir in sorted(cache_dir.iterdir()):
+        if not month_dir.is_dir():
+            continue
+        for day_file in sorted(month_dir.glob("*.parquet")):
+            try:
+                # Parse date from path: YYYY-MM/DD.parquet
+                month_str = month_dir.name  # e.g., "2020-01"
+                day_str = day_file.stem     # e.g., "02"
+                file_date = datetime.strptime(f"{month_str}-{day_str}", "%Y-%m-%d").date()
+
+                if start and file_date < start:
+                    continue
+                if end and file_date > end:
+                    continue
+
+                df = pd.read_parquet(day_file)
+                dfs.append(df)
+            except (ValueError, KeyError) as e:
+                print(f"Warning: Could not load {day_file}: {e}")
+                continue
+
+    if not dfs:
+        raise ValueError(f"No data found for {underlying} in date range {start_date} to {end_date}")
+
+    # Concatenate all dataframes
+    combined = pd.concat(dfs, ignore_index=False)
+
+    # Ensure timestamp index
+    if "timestamp" in combined.columns:
+        combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True)
+        combined = combined.set_index("timestamp").sort_index()
+    elif combined.index.name != "timestamp":
+        combined.index = pd.to_datetime(combined.index, utc=True)
+        combined.index.name = "timestamp"
+        combined = combined.sort_index()
+
+    return combined
 from src.model.lejepa import LeJEPA
 from src.model.policy import (
     PolicyNetwork,
@@ -400,7 +461,8 @@ class DualPolicyRunner:
             patch_tensor = patch.unsqueeze(0).to(self.device)
 
         with torch.amp.autocast(device_type=self.device.type, dtype=torch.bfloat16):
-            embedding = self.lejepa.context_encoder(patch_tensor, return_all_tokens=False)
+            # Use LeJEPA's encode method which returns the embedding
+            embedding = self.lejepa.encode(patch_tensor)
 
         return embedding.float()
 
@@ -446,9 +508,11 @@ class DualPolicyRunner:
     ) -> Tuple[ExitAction, float]:
         """Get exit action from exit policy (NN or rule-based)."""
         if self.use_rule_based_exit:
-            # Rule-based exit policy
-            market_close = datetime.combine(current_time.date(), time(16, 0))
-            hours_to_close = max(0, (market_close - current_time).total_seconds() / 3600)
+            # Rule-based exit policy - convert to ET for market hours check
+            et_tz = pytz.timezone("America/New_York")
+            current_time_et = current_time.astimezone(et_tz) if current_time.tzinfo else et_tz.localize(current_time)
+            market_close = et_tz.localize(datetime.combine(current_time_et.date(), time(16, 0)))
+            hours_to_close = max(0, (market_close - current_time_et).total_seconds() / 3600)
 
             # Calculate hours held
             hours_held = None
@@ -507,8 +571,10 @@ class DualPolicyRunner:
         bars_held = (current_idx - self.position_entry_idx) / 360 if self.position_entry_idx else 0
 
         # Time to close (normalized by 6.5 hour trading day)
-        market_close = datetime.combine(current_time.date(), time(16, 0))
-        hours_to_close = max(0, (market_close - current_time).total_seconds() / 3600)
+        et_tz = pytz.timezone("America/New_York")
+        current_time_et = current_time.astimezone(et_tz) if current_time.tzinfo else et_tz.localize(current_time)
+        market_close = et_tz.localize(datetime.combine(current_time_et.date(), time(16, 0)))
+        hours_to_close = max(0, (market_close - current_time_et).total_seconds() / 3600)
         normalized_time = hours_to_close / 6.5
 
         return torch.tensor(
@@ -699,8 +765,11 @@ class DualPolicyRunner:
                     continue
 
                 # Don't trade in last 30 minutes
-                market_close = datetime.combine(timestamp.date(), time(16, 0))
-                minutes_to_close = (market_close - timestamp).total_seconds() / 60
+                # Convert to ET for market hours check (market closes at 16:00 ET)
+                et_tz = pytz.timezone("America/New_York")
+                timestamp_et = timestamp.astimezone(et_tz) if timestamp.tzinfo else et_tz.localize(timestamp)
+                market_close = et_tz.localize(datetime.combine(timestamp_et.date(), time(16, 0)))
+                minutes_to_close = (market_close - timestamp_et).total_seconds() / 60
                 if minutes_to_close < 30:
                     continue
 
@@ -921,7 +990,7 @@ class StrategyRunner:
         patch_tensor = patch.unsqueeze(0).to(self.device)
 
         with torch.amp.autocast(device_type=self.device.type, dtype=torch.bfloat16):
-            embedding = self.lejepa.context_encoder(patch_tensor, return_all_tokens=False)
+            embedding = self.lejepa.encode(patch_tensor)
 
         output = self.policy(embedding.float(), return_value=False)
         probs = output["action_probs"][0]
@@ -1074,8 +1143,10 @@ class StrategyRunner:
                 if overall_idx < self.patch_length:
                     continue
 
-                market_close = datetime.combine(timestamp.date(), time(16, 0))
-                minutes_to_close = (market_close - timestamp).total_seconds() / 60
+                et_tz = pytz.timezone("America/New_York")
+                timestamp_et = timestamp.astimezone(et_tz) if timestamp.tzinfo else et_tz.localize(timestamp)
+                market_close = et_tz.localize(datetime.combine(timestamp_et.date(), time(16, 0)))
+                minutes_to_close = (market_close - timestamp_et).total_seconds() / 60
                 if minutes_to_close < 30:
                     continue
 
@@ -1135,7 +1206,7 @@ class StrategyRunner:
 def load_lejepa(lejepa_path: str, device: torch.device) -> LeJEPA:
     """Load and freeze pre-trained LeJEPA model."""
     print(f"Loading LeJEPA from {lejepa_path}...")
-    lejepa, _ = LeJEPA.load_checkpoint(lejepa_path, device=str(device))
+    lejepa = LeJEPA.load(lejepa_path, map_location=str(device))
     lejepa = lejepa.to(device)
     lejepa.eval()
 
@@ -1449,6 +1520,9 @@ def main() -> None:
                 flip_on_counter=flip_on_counter,
             )
 
+            # Get context length from LeJEPA model
+            context_len = lejepa.max_context_len
+
             runner = DualPolicyRunner(
                 lejepa=lejepa,
                 entry_policy=entry_policy,
@@ -1459,6 +1533,7 @@ def main() -> None:
                 action_cooldown=args.action_cooldown,
                 entry_confidence=args.entry_confidence,
                 use_continuous_signal=True,
+                patch_length=context_len,
             )
         elif rule_based_exit_mode:
             # Rule-based exit mode: load only entry policy, use rule-based exit
@@ -1506,6 +1581,10 @@ def main() -> None:
                 eod_exit_minutes=args.eod_exit_minutes,
             )
 
+            # Get context length from LeJEPA model
+            context_len = lejepa.max_context_len
+            print(f"  Context length: {context_len}")
+
             runner = DualPolicyRunner(
                 lejepa=lejepa,
                 entry_policy=entry_policy,
@@ -1516,6 +1595,7 @@ def main() -> None:
                 action_cooldown=args.action_cooldown,
                 entry_confidence=args.entry_confidence,
                 use_rule_based_exit=True,
+                patch_length=context_len,
             )
 
             # Detect 3-class entry policy and set flag
@@ -1529,6 +1609,9 @@ def main() -> None:
                 args.entry_policy, args.exit_policy, device
             )
 
+            # Get context length from LeJEPA model
+            context_len = lejepa.max_context_len
+
             runner = DualPolicyRunner(
                 lejepa=lejepa,
                 entry_policy=entry_policy,
@@ -1538,10 +1621,14 @@ def main() -> None:
                 verbose=args.verbose,
                 action_cooldown=args.action_cooldown,
                 entry_confidence=args.entry_confidence,
+                patch_length=context_len,
             )
     else:
         print("\nUsing LEGACY mode (single PolicyNetwork)")
         policy = load_legacy_policy(args.policy, lejepa, device)
+
+        # Get context length from LeJEPA model
+        context_len = lejepa.max_context_len
 
         runner = StrategyRunner(
             lejepa=lejepa,
@@ -1553,6 +1640,7 @@ def main() -> None:
             force_trades=args.force_trades,
             action_cooldown=args.action_cooldown,
             min_signal_threshold=args.min_signal_threshold,
+            patch_length=context_len,
         )
 
     # Load data
@@ -1561,42 +1649,40 @@ def main() -> None:
     print("=" * 70)
 
     if args.normalized:
-        # Use pre-normalized cached data (23 features, matches LeJEPA training)
-        print(f"Loading NORMALIZED data for {args.underlying}")
-        print(f"Stocks dir: {args.data_dir}")
-        print(f"Options dir: {args.options_dir}")
-        df = load_normalized_data(
-            stocks_dir=args.data_dir,
-            options_dir=args.options_dir,
+        # Use pre-normalized cached data directly (skip DAG validation/sync)
+        print(f"Loading NORMALIZED data for {args.underlying} (direct cache)")
+        df = load_normalized_from_cache(
             underlying=args.underlying,
             start_date=args.start_date,
             end_date=args.end_date,
         )
         print(f"Loaded {len(df):,} bars with {len(df.columns)} features (normalized)")
 
-        # Load raw close prices for trading decisions
-        from src.data.loader import RAW_CACHE_DIR, parse_date
-        from pathlib import Path
-        raw_cache_dir = Path(RAW_CACHE_DIR)
-        raw_files = sorted(raw_cache_dir.glob(f"{args.underlying}_raw_*.parquet"))
-
-        start = parse_date(args.start_date) if args.start_date else None
-        end = parse_date(args.end_date) if args.end_date else None
-
+        # Load raw close prices for trading decisions from training-1m-raw
+        raw_cache_dir = Path("data/training-1m-raw/SPY")
         raw_closes_list = []
-        for rf in raw_files:
-            date_str = rf.stem.split("_")[-1]
-            try:
-                from datetime import datetime as dt
-                file_date = dt.strptime(date_str, "%Y-%m-%d").date()
-                if start and file_date < start:
+
+        start = datetime.strptime(args.start_date, "%Y-%m-%d").date() if args.start_date else None
+        end = datetime.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else None
+
+        if raw_cache_dir.exists():
+            for month_dir in sorted(raw_cache_dir.iterdir()):
+                if not month_dir.is_dir():
                     continue
-                if end and file_date > end:
-                    continue
-                raw_df = pd.read_parquet(rf)
-                raw_closes_list.append(raw_df["close"].values)
-            except (ValueError, KeyError):
-                continue
+                for day_file in sorted(month_dir.glob("*.parquet")):
+                    try:
+                        month_str = month_dir.name
+                        day_str = day_file.stem
+                        file_date = datetime.strptime(f"{month_str}-{day_str}", "%Y-%m-%d").date()
+                        if start and file_date < start:
+                            continue
+                        if end and file_date > end:
+                            continue
+                        raw_df = pd.read_parquet(day_file)
+                        if "close" in raw_df.columns:
+                            raw_closes_list.append(raw_df["close"].values)
+                    except (ValueError, KeyError):
+                        continue
         raw_close_prices = np.concatenate(raw_closes_list) if raw_closes_list else np.zeros(len(df))
         print(f"Loaded {len(raw_close_prices):,} raw close prices for trading")
 

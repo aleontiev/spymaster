@@ -206,3 +206,86 @@ src/
 - LeJEPA: Joint-Embedding Predictive Architecture with SIGReg regularization
 - Polygon.io: Market data provider
 - Alpaca: Brokerage API for execution
+
+## SPY Price Movement Analysis
+
+Statistical analysis of SPY intraday price movements for setting signal thresholds.
+Uses rolling windows from 1-minute bars to calculate returns over 1m, 5m, and 15m intervals.
+
+> **Note on frequency**: With ~390 minutes per trading day, we get ~389 rolling 1m windows,
+> ~385 rolling 5m windows, and ~375 rolling 15m windows per day. The "x/day" frequencies
+> below reflect how often each percentile threshold is crossed on average.
+
+### Full Dataset (2020-2025)
+
+- **Trading days**: 1518 (~6.0 years)
+- **Date range**: 2020-01-02 to 2026-01-15
+- **Method**: Rolling windows (overlapping intervals from 1-minute bars)
+
+**DROPS (Steepest Declines)**
+
+| Interval | 1st Percentile | 5th Percentile | 10th Percentile |
+|----------|----------------|----------------|-----------------|
+| **1m** | -0.137% (3.9x/day) | -0.067% (19x/day) | -0.044% (39x/day) |
+| **5m** | -0.309% (3.8x/day) | -0.154% (19x/day) | -0.100% (38x/day) |
+| **15m** | -0.517% (3.7x/day) | -0.264% (19x/day) | -0.173% (37x/day) |
+
+**RALLIES (Steepest Gains)**
+
+| Interval | 90th Percentile | 95th Percentile | 99th Percentile |
+|----------|-----------------|-----------------|-----------------|
+| **1m** | +0.043% (39x/day) | +0.065% (19x/day) | +0.135% (3.9x/day) |
+| **5m** | +0.096% (38x/day) | +0.145% (19x/day) | +0.298% (3.8x/day) |
+| **15m** | +0.165% (37x/day) | +0.246% (19x/day) | +0.491% (3.7x/day) |
+
+**Distribution Stats**
+
+| Interval | Mean | Std Dev | Min | Max |
+|----------|------|---------|-----|-----|
+| **1m** | +0.00005% | 0.0487% | -1.479% | +2.574% |
+| **5m** | +0.00028% | 0.1088% | -3.358% | +4.539% |
+| **15m** | +0.00101% | 0.1828% | -4.924% | +6.065% |
+
+### Recent Period (2023-2025)
+
+- **Trading days**: 762 (~3.0 years)
+- **Date range**: 2023-01-03 to 2026-01-15
+- **Method**: Rolling windows (overlapping intervals from 1-minute bars)
+
+**DROPS (Steepest Declines)**
+
+| Interval | 1st Percentile | 5th Percentile | 10th Percentile |
+|----------|----------------|----------------|-----------------|
+| **1m** | -0.103% (3.9x/day) | -0.054% (19x/day) | -0.037% (39x/day) |
+| **5m** | -0.233% (3.8x/day) | -0.122% (19x/day) | -0.082% (38x/day) |
+| **15m** | -0.400% (3.7x/day) | -0.213% (19x/day) | -0.142% (37x/day) |
+
+**RALLIES (Steepest Gains)**
+
+| Interval | 90th Percentile | 95th Percentile | 99th Percentile |
+|----------|-----------------|-----------------|-----------------|
+| **1m** | +0.036% (39x/day) | +0.052% (19x/day) | +0.098% (3.9x/day) |
+| **5m** | +0.080% (38x/day) | +0.114% (19x/day) | +0.215% (3.8x/day) |
+| **15m** | +0.137% (37x/day) | +0.196% (19x/day) | +0.363% (3.7x/day) |
+
+**Distribution Stats**
+
+| Interval | Mean | Std Dev | Min | Max |
+|----------|------|---------|-----|-----|
+| **1m** | +0.00009% | 0.0380% | -1.479% | +2.574% |
+| **5m** | +0.00043% | 0.0853% | -3.358% | +4.539% |
+| **15m** | +0.00109% | 0.1459% | -4.924% | +6.065% |
+
+### Key Observations
+
+1. **2023-2025 thresholds are ~25% tighter** than the full 2020-2025 dataset due to
+   excluding the high-volatility COVID crash (2020) and 2022 bear market periods.
+
+2. **Moves scale roughly with √time** - 15m moves are ~3.5x larger than 1m moves
+   (√15 ≈ 3.9), consistent with random walk theory.
+
+3. **Slight negative skew** - Drops are marginally steeper than rallies at extremes.
+
+4. **Practical thresholds for 0DTE signals** (using 2023-2025 baseline):
+   - 99th percentile (top 1%): 1m ±0.10%, 5m ±0.22%, 15m ±0.36%
+   - 95th percentile (top 5%): 1m ±0.05%, 5m ±0.12%, 15m ±0.20%

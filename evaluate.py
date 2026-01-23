@@ -30,7 +30,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from src.data.loader import create_combined_dataset, load_normalized_data
+from src.data.dag.loader import create_combined_dataset, load_normalized_data
 from src.data.processing import MarketPatch
 from src.model.lejepa import LeJEPA
 from src.model.policy import EntryPolicy, EntryAction, ExitPolicy, ExitAction
@@ -62,11 +62,19 @@ def detect_model_type(checkpoint: Dict) -> CheckpointInfo:
     epoch = checkpoint.get("epoch", 0)
     metrics = checkpoint.get("metrics", None)
 
-    # Check for LeJEPA (has model_state_dict with encoder keys)
-    if "model_state_dict" in checkpoint:
-        state_dict = checkpoint["model_state_dict"]
-        has_encoder = any("context_encoder" in k or "target_encoder" in k for k in state_dict.keys())
-        if has_encoder:
+    # Check for LeJEPA (has model_state_dict or state_dict with transformer/projector keys)
+    state_dict_key = "model_state_dict" if "model_state_dict" in checkpoint else "state_dict"
+    if state_dict_key in checkpoint:
+        state_dict = checkpoint[state_dict_key]
+        # Check for LeJEPA architecture keys (old: context_encoder, new: transformer/projector)
+        has_lejepa = any(
+            "context_encoder" in k or "target_encoder" in k or
+            "transformer" in k or "projector" in k or "input_proj" in k
+            for k in state_dict.keys()
+        )
+        # Also check config for LeJEPA-specific keys
+        has_lejepa_config = "d_model" in config or "embedding_dim" in config or "lambda_reg" in config
+        if has_lejepa or has_lejepa_config:
             return CheckpointInfo(
                 model_type="lejepa",
                 config=config,
@@ -132,7 +140,8 @@ def extract_embeddings_for_probe(
             context_batch = context_batch.to(device)
             target_batch = target_batch.to(device)
 
-            embeddings = model.context_encoder(context_batch, return_all_tokens=False)
+            # Use encode() method which returns pooled embedding
+            embeddings = model.encode(x_context=context_batch)
 
             # Label: is last bar of target > last bar of context?
             context_last = context_batch[:, -1, 0]
@@ -223,27 +232,45 @@ def evaluate_lejepa(
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = checkpoint.get("config", {})
 
-    feature_dim = config.get("feature_dim", 22)
-    embedding_dim = config.get("embedding_dim", 256)
-    num_heads = config.get("num_heads", 8)
+    # Extract config with proper key names (new format)
+    input_dim = config.get("input_dim", config.get("feature_dim", 29))
+    premarket_dim = config.get("premarket_dim", 5)
+    premarket_len = config.get("premarket_len", 4)
+    opening_range_dim = config.get("opening_range_dim", 5)
+    d_model = config.get("d_model", 128)
+    nhead = config.get("nhead", config.get("num_heads", 8))
     num_layers = config.get("num_layers", 4)
-    predictor_hidden_dim = config.get("predictor_hidden_dim", 1024)
+    embedding_dim = config.get("embedding_dim", 64)
+    max_context_len = config.get("max_context_len", 75)
+    dropout = config.get("dropout", 0.1)
+    lambda_reg = config.get("lambda_reg", 0.5)
+    reg_type = config.get("reg_type", "vicreg")
 
     print(f"\nModel config:")
-    print(f"  Feature dim: {feature_dim}")
+    print(f"  Input dim: {input_dim}")
+    print(f"  d_model: {d_model}")
     print(f"  Embedding dim: {embedding_dim}")
+    print(f"  Layers: {num_layers}, Heads: {nhead}")
     print(f"  Epoch: {checkpoint.get('epoch', 'unknown')}")
 
     model = LeJEPA(
-        feature_dim=feature_dim,
-        embedding_dim=embedding_dim,
-        num_heads=num_heads,
+        input_dim=input_dim,
+        premarket_dim=premarket_dim,
+        premarket_len=premarket_len,
+        opening_range_dim=opening_range_dim,
+        d_model=d_model,
+        nhead=nhead,
         num_layers=num_layers,
-        predictor_hidden_dim=predictor_hidden_dim,
+        embedding_dim=embedding_dim,
+        max_context_len=max_context_len,
+        dropout=dropout,
+        lambda_reg=lambda_reg,
+        reg_type=reg_type,
     ).to(device)
 
-    # Load weights (handle torch.compile prefix)
-    state_dict = checkpoint["model_state_dict"]
+    # Load weights (handle torch.compile prefix and both key names)
+    state_dict_key = "model_state_dict" if "model_state_dict" in checkpoint else "state_dict"
+    state_dict = checkpoint[state_dict_key]
     new_state_dict = {}
     for key, value in state_dict.items():
         new_key = key.replace("._orig_mod", "")
@@ -256,10 +283,10 @@ def evaluate_lejepa(
 
     print("\nLoading dataset...")
     train_dataset, val_dataset, _ = create_combined_dataset(
-        stocks_dir=data_dir,
-        options_dir=options_dir if options_dir else None,
         start_date=start_date,
         end_date=end_date,
+        context_len=max_context_len,
+        target_len=max_context_len,  # Use same length for target
     )
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=0)

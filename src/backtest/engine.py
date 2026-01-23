@@ -24,6 +24,7 @@ import glob
 
 import numpy as np
 import pandas as pd
+import pytz
 
 
 class OrderSide(Enum):
@@ -335,9 +336,11 @@ class OptionsDataProvider:
         # Try to load data if not cached
         if date_str not in self._data_cache:
             if not self.load_date(timestamp):
-                # Fall back to simulator
-                market_close = datetime.combine(timestamp.date(), time(16, 0))
-                time_to_expiry = max(0, (market_close - timestamp).total_seconds() / 3600)
+                # Fall back to simulator - convert to ET for market hours
+                et_tz = pytz.timezone("America/New_York")
+                timestamp_et = timestamp.astimezone(et_tz) if timestamp.tzinfo else et_tz.localize(timestamp)
+                market_close = et_tz.localize(datetime.combine(timestamp_et.date(), time(16, 0)))
+                time_to_expiry = max(0, (market_close - timestamp_et).total_seconds() / 3600)
                 return self.fallback.estimate_option_price(
                     underlying_price, strike, time_to_expiry, position_type
                 )
@@ -407,9 +410,11 @@ class OptionsDataProvider:
 
             return mid_price, bid_price, ask_price
 
-        # Fall back to simulator if no real data found
-        market_close = datetime.combine(timestamp.date(), time(16, 0))
-        time_to_expiry = max(0, (market_close - timestamp).total_seconds() / 3600)
+        # Fall back to simulator if no real data found - convert to ET
+        et_tz = pytz.timezone("America/New_York")
+        timestamp_et = timestamp.astimezone(et_tz) if timestamp.tzinfo else et_tz.localize(timestamp)
+        market_close = et_tz.localize(datetime.combine(timestamp_et.date(), time(16, 0)))
+        time_to_expiry = max(0, (market_close - timestamp_et).total_seconds() / 3600)
         return self.fallback.estimate_option_price(
             underlying_price, strike, time_to_expiry, position_type
         )
@@ -476,6 +481,12 @@ class BacktestEngine:
         # Current market state
         self.current_timestamp: Optional[datetime] = None
         self.current_underlying_price: float = 0.0
+
+    def _get_market_close(self, timestamp: datetime) -> datetime:
+        """Get market close time (16:00 ET) for the given timestamp, timezone-aware."""
+        et_tz = pytz.timezone("America/New_York")
+        timestamp_et = timestamp.astimezone(et_tz) if timestamp.tzinfo else et_tz.localize(timestamp)
+        return et_tz.localize(datetime.combine(timestamp_et.date(), time(16, 0)))
 
     def reset(self) -> None:
         """Reset engine state for new backtest."""
@@ -660,7 +671,7 @@ class BacktestEngine:
                 entry_price=fill_price,
                 entry_timestamp=self.current_timestamp,
                 strike=strike,
-                expiry=datetime.combine(self.current_timestamp.date(), time(16, 0)),
+                expiry=self._get_market_close(self.current_timestamp),
                 current_price=fill_price,
             )
 

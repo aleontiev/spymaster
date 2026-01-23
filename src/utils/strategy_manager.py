@@ -408,23 +408,6 @@ def get_checkpoint_path(checkpoint: Optional[Dict[str, str] | str]) -> Optional[
     return None
 
 
-def get_checkpoint_id(checkpoint: Optional[Dict[str, str] | str]) -> Optional[str]:
-    """
-    Extract checkpoint ID from checkpoint entry.
-
-    Args:
-        checkpoint: Either a string path or dict with {"id": uuid, "path": path}
-
-    Returns:
-        Checkpoint UUID or None
-    """
-    if checkpoint is None:
-        return None
-    if isinstance(checkpoint, dict):
-        return checkpoint.get("id")
-    return None
-
-
 def strategy_to_args(strategy: Dict[str, Any]) -> List[str]:
     """
     Convert a strategy to command-line arguments for the backtest runner.

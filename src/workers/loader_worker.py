@@ -21,14 +21,15 @@ import pandas as pd
 import pytz
 
 from src.workers.event_bus import EventBus, Event
-from src.data.loader import (
+from src.data.dag.loader import (
     CACHE_VERSION,
     GEX_FLOW_FEATURES,
     NORMALIZED_CACHE_DIR,
     RAW_CACHE_DIR,
     DAILY_CACHE_DIR,
-    get_market_hours_utc,
-    get_market_duration_secs,
+)
+from src.utils.market_hours import get_market_hours_utc, get_market_duration_secs
+from src.data.dag.realtime import (
     normalize_features,
     load_gex_flow_for_date,
     compute_options_features_vectorized,

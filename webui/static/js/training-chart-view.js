@@ -38,6 +38,8 @@ const TrainingChartView = {
         premarketLow: false,
         threeDayHigh: false,
         threeDayLow: false,
+        orHigh: false,
+        orLow: false,
     },
 
     // Legend groups for batch toggling
@@ -46,7 +48,7 @@ const TrainingChartView = {
         gamma: ['zeroGex', 'positiveGws', 'negativeGws', 'gammaCallWall', 'gammaPutWall'],
         delta: ['zeroDex', 'deltaSupport', 'deltaResistance', 'dexCallWall', 'dexPutWall'],
         volume: ['mostActiveStrike', 'callWeightedStrike', 'putWeightedStrike', 'maxCallStrike', 'maxPutStrike'],
-        prior: ['premarketHigh', 'premarketLow', 'threeDayHigh', 'threeDayLow'],
+        prior: ['premarketHigh', 'premarketLow', 'threeDayHigh', 'threeDayLow', 'orHigh', 'orLow'],
     },
 
     // Configuration
@@ -520,21 +522,35 @@ const TrainingChartView = {
             this.chartSeries.pointOfControl = this.addLineSeries(chart, data.point_of_control, '#a855f7', 2, 0, this.overlayVisible.pointOfControl);
         }
 
-        // Horizontal lines (premarket, 3-day)
+        // Horizontal lines (3-day high/low - scalar values spanning full day)
         const times = data.ohlcv?.map(d => d.time);
         if (times?.length > 0) {
-            if (data.premarket_high) {
-                this.chartSeries.premarketHigh = this.addHorizontalLine(chart, data.premarket_high, times, '#34d399', this.overlayVisible.premarketHigh);
-            }
-            if (data.premarket_low) {
-                this.chartSeries.premarketLow = this.addHorizontalLine(chart, data.premarket_low, times, '#fb7185', this.overlayVisible.premarketLow);
-            }
             if (data.three_day_high) {
                 this.chartSeries.threeDayHigh = this.addHorizontalLine(chart, data.three_day_high, times, '#10b981', this.overlayVisible.threeDayHigh);
             }
             if (data.three_day_low) {
                 this.chartSeries.threeDayLow = this.addHorizontalLine(chart, data.three_day_low, times, '#f43f5e', this.overlayVisible.threeDayLow);
             }
+        }
+
+        // Premarket (PM) high/low - prefer time series from columns, fallback to scalar
+        if (data.pm_high?.length > 0) {
+            this.chartSeries.premarketHigh = this.addLineSeries(chart, data.pm_high, '#34d399', 1, 2, this.overlayVisible.premarketHigh);
+        } else if (data.premarket_high && times?.length > 0) {
+            this.chartSeries.premarketHigh = this.addHorizontalLine(chart, data.premarket_high, times, '#34d399', this.overlayVisible.premarketHigh);
+        }
+        if (data.pm_low?.length > 0) {
+            this.chartSeries.premarketLow = this.addLineSeries(chart, data.pm_low, '#fb7185', 1, 2, this.overlayVisible.premarketLow);
+        } else if (data.premarket_low && times?.length > 0) {
+            this.chartSeries.premarketLow = this.addHorizontalLine(chart, data.premarket_low, times, '#fb7185', this.overlayVisible.premarketLow);
+        }
+
+        // Opening Range (OR) high/low - time series from data columns (starts at 9:45am)
+        if (data.or_high?.length > 0) {
+            this.chartSeries.orHigh = this.addLineSeries(chart, data.or_high, '#22d3ee', 1, 2, this.overlayVisible.orHigh);
+        }
+        if (data.or_low?.length > 0) {
+            this.chartSeries.orLow = this.addLineSeries(chart, data.or_low, '#f472b6', 1, 2, this.overlayVisible.orLow);
         }
     },
 

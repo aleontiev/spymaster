@@ -23,12 +23,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.massive_client import MassiveClient
 from src.data.thetadata_client import ThetaDataClient, ThetaDataError
-from src.data.loader import (
-    load_combined_day,
-    normalize_features,
-    RAW_CACHE_DIR,
-    NORMALIZED_CACHE_DIR,
-)
+from src.data.dag.loader import RAW_CACHE_DIR, NORMALIZED_CACHE_DIR
+from src.data.dag.realtime import load_combined_day, normalize_features
 load_dotenv()
 
 # Configure logging

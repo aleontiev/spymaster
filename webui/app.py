@@ -1303,20 +1303,39 @@ def _chart_data_training_raw(df: pd.DataFrame, file_path: str) -> Any:
     else:
         df[time_col] = pd.to_datetime(df[time_col]).dt.tz_convert('UTC')
 
-    # Split into premarket (before 14:30 UTC) and market hours (14:30-21:00 UTC)
-    # Market hours: 9:30 AM - 4:00 PM ET = 14:30 - 21:00 UTC
-    market_start_hour = 14
-    market_start_minute = 30
-    market_end_hour = 21
+    # Determine market hours in UTC based on the date (DST-aware)
+    # Market hours: 9:30 AM - 4:00 PM ET
+    # In EST (winter): 14:30 - 21:00 UTC
+    # In EDT (summer): 13:30 - 20:00 UTC
+    import pytz
+    eastern = pytz.timezone('US/Eastern')
+
+    # Get the date from the data to determine DST offset
+    sample_date = df[time_col].iloc[0].date() if len(df) > 0 else None
+    if sample_date:
+        # Create a datetime at market open in Eastern time
+        market_open_et = eastern.localize(pd.Timestamp(sample_date).replace(hour=9, minute=30).to_pydatetime())
+        market_close_et = eastern.localize(pd.Timestamp(sample_date).replace(hour=16, minute=0).to_pydatetime())
+        # Convert to UTC to get the actual hours
+        market_open_utc = market_open_et.astimezone(pytz.UTC)
+        market_close_utc = market_close_et.astimezone(pytz.UTC)
+        market_start_hour = market_open_utc.hour
+        market_start_minute = market_open_utc.minute
+        market_end_hour = market_close_utc.hour
+    else:
+        # Fallback to EST (winter) hours
+        market_start_hour = 14
+        market_start_minute = 30
+        market_end_hour = 21
 
     df['hour'] = df[time_col].dt.hour
     df['minute'] = df[time_col].dt.minute
 
-    # Premarket: before 14:30 UTC
+    # Premarket: before market open UTC
     premarket_mask = (df['hour'] < market_start_hour) | \
                      ((df['hour'] == market_start_hour) & (df['minute'] < market_start_minute))
 
-    # Market hours: 14:30 - 21:00 UTC (inclusive of 14:30, exclusive of 21:00)
+    # Market hours: market open to close UTC
     market_mask = ((df['hour'] > market_start_hour) | \
                    ((df['hour'] == market_start_hour) & (df['minute'] >= market_start_minute))) & \
                   (df['hour'] < market_end_hour)
@@ -1506,6 +1525,37 @@ def _chart_data_training_raw(df: pd.DataFrame, file_path: str) -> Any:
 
         result["rolling_vwap"] = [{"time": _to_unix(row[time_col]), "value": float(row['rolling_vwap'])}
                                   for _, row in mdf.iterrows() if not pd.isna(row.get('rolling_vwap', np.nan)) and row['open'] > 0]
+
+        # Opening Range (OR) high/low - from pre-computed columns (populated after first 15 min)
+        # Extend line to first candle for visual continuity
+        first_time = _to_unix(mdf.iloc[0][time_col]) if len(mdf) > 0 else None
+        if 'or_high' in mdf.columns:
+            or_high_data = [{"time": _to_unix(row[time_col]), "value": float(row['or_high'])}
+                            for _, row in mdf.iterrows() if not pd.isna(row.get('or_high', np.nan)) and row['open'] > 0 and row['or_high'] > 0]
+            if or_high_data and first_time and or_high_data[0]["time"] > first_time:
+                or_high_data.insert(0, {"time": first_time, "value": or_high_data[0]["value"]})
+            result["or_high"] = or_high_data
+        if 'or_low' in mdf.columns:
+            or_low_data = [{"time": _to_unix(row[time_col]), "value": float(row['or_low'])}
+                           for _, row in mdf.iterrows() if not pd.isna(row.get('or_low', np.nan)) and row['open'] > 0 and row['or_low'] > 0]
+            if or_low_data and first_time and or_low_data[0]["time"] > first_time:
+                or_low_data.insert(0, {"time": first_time, "value": or_low_data[0]["value"]})
+            result["or_low"] = or_low_data
+
+        # Premarket (PM) high/low - from pre-computed columns
+        # Extend line to first candle for visual continuity
+        if 'pm_high' in mdf.columns:
+            pm_high_data = [{"time": _to_unix(row[time_col]), "value": float(row['pm_high'])}
+                            for _, row in mdf.iterrows() if not pd.isna(row.get('pm_high', np.nan)) and row['open'] > 0 and row['pm_high'] > 0]
+            if pm_high_data and first_time and pm_high_data[0]["time"] > first_time:
+                pm_high_data.insert(0, {"time": first_time, "value": pm_high_data[0]["value"]})
+            result["pm_high"] = pm_high_data
+        if 'pm_low' in mdf.columns:
+            pm_low_data = [{"time": _to_unix(row[time_col]), "value": float(row['pm_low'])}
+                           for _, row in mdf.iterrows() if not pd.isna(row.get('pm_low', np.nan)) and row['open'] > 0 and row['pm_low'] > 0]
+            if pm_low_data and first_time and pm_low_data[0]["time"] > first_time:
+                pm_low_data.insert(0, {"time": first_time, "value": pm_low_data[0]["value"]})
+            result["pm_low"] = pm_low_data
 
     # Use market_df for all remaining features
     df_features = market_df
@@ -2183,7 +2233,7 @@ def api_pytorch_embeddings():
         from sklearn.manifold import TSNE
 
         from src.model.lejepa import LeJEPA
-        from src.data.loader import load_normalized_data
+        from src.data.dag.loader import load_normalized_data
 
         # Load the model
         device = "cuda" if torch.cuda.is_available() else "cpu"

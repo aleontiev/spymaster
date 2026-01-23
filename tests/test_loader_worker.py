@@ -314,7 +314,7 @@ async def test_load_minute_for_strategy(temp_dirs):
     """Test the helper function for loading minute data."""
     # Create a cached file
     target_date = date(2024, 1, 15)
-    from src.data.loader import CACHE_VERSION
+    from src.data.dag.loader import CACHE_VERSION
     cache_path = temp_dirs["cache"] / f"SPY_{CACHE_VERSION}_{target_date}.parquet"
 
     df = pd.DataFrame({
