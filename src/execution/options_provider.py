@@ -19,8 +19,21 @@ class RealOptionsProvider:
     def __init__(self, options_dir: str = "data/options-1m/SPY"):
         self.options_dir = Path(options_dir)
         self._current_date: Optional[date] = None
+        self._current_expiration: Optional[date] = None  # The actual expiration being used
         self._day_data: Optional[pd.DataFrame] = None
         self._price_cache: dict = {}
+
+    @property
+    def current_expiration(self) -> Optional[date]:
+        """The expiration date of the currently loaded options (may differ from trading date)."""
+        return self._current_expiration
+
+    @property
+    def days_to_expiration(self) -> Optional[int]:
+        """Days until expiration for currently loaded options (0 = 0DTE, 1 = 1DTE, etc.)."""
+        if self._current_date is None or self._current_expiration is None:
+            return None
+        return (self._current_expiration - self._current_date).days
 
     def _parse_ticker(self, ticker: str) -> Tuple[Optional[date], Optional[str], Optional[float]]:
         """Parse options ticker to extract expiration, type, strike."""
@@ -44,11 +57,17 @@ class RealOptionsProvider:
         return exp_date, opt_type, strike
 
     def load_date(self, trading_date: date) -> bool:
-        """Load options data for a specific trading date."""
+        """Load options data for a specific trading date.
+
+        Attempts to load 0DTE options first. If not available, finds the closest
+        expiration date (1DTE, 2DTE, weekly, etc.) to support days when 0DTE
+        options weren't available (e.g., SPY before Nov 2022 only had M/W/F).
+        """
         if self._current_date == trading_date:
             return self._day_data is not None
 
         self._current_date = trading_date
+        self._current_expiration = None
         self._day_data = None
         self._price_cache = {}
 
@@ -65,12 +84,28 @@ class RealOptionsProvider:
             df['expiration'] = parsed.apply(lambda x: x[0])
             df['option_type'] = parsed.apply(lambda x: x[1])
             df['strike'] = parsed.apply(lambda x: x[2])
-            df = df[df['expiration'] == trading_date].copy()
+
+            # Find the best expiration to use
+            selected_expiration = self._find_best_expiration(df, trading_date)
+            if selected_expiration is None:
+                return False
+
+            df = df[df['expiration'] == selected_expiration].copy()
+            self._current_expiration = selected_expiration
 
             if len(df) == 0:
                 return False
 
-            df['window_start'] = pd.to_datetime(df['window_start'])
+            # Handle both 'window_start' (Polygon format) and 'timestamp' (ThetaData format)
+            if 'window_start' in df.columns:
+                ts_col = 'window_start'
+            elif 'timestamp' in df.columns:
+                ts_col = 'timestamp'
+            else:
+                print(f"Error loading options data for {trading_date}: no timestamp column found")
+                return False
+
+            df['window_start'] = pd.to_datetime(df[ts_col])
             df['minute'] = df['window_start'].dt.floor('min')
             self._day_data = df
             return True
@@ -78,6 +113,37 @@ class RealOptionsProvider:
         except Exception as e:
             print(f"Error loading options data for {trading_date}: {e}")
             return False
+
+    def _find_best_expiration(self, df: pd.DataFrame, trading_date: date) -> Optional[date]:
+        """Find the best expiration date to use for trading.
+
+        Priority:
+        1. 0DTE (expiration == trading_date) if available
+        2. Closest future expiration (1DTE, 2DTE, etc.)
+
+        Returns None if no valid expiration found.
+        """
+        # Get unique expirations that are on or after trading date
+        valid_expirations = df[df['expiration'] >= trading_date]['expiration'].dropna().unique()
+
+        if len(valid_expirations) == 0:
+            return None
+
+        # Convert to dates and sort
+        exp_dates = sorted([exp for exp in valid_expirations if isinstance(exp, date)])
+
+        if len(exp_dates) == 0:
+            return None
+
+        # Return the closest expiration (first one, since sorted)
+        selected = exp_dates[0]
+
+        # Log if not using 0DTE
+        if selected != trading_date:
+            dte = (selected - trading_date).days
+            print(f"No 0DTE options for {trading_date}, using {dte}DTE (exp: {selected})")
+
+        return selected
 
     def get_option_price(
         self,

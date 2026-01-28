@@ -176,7 +176,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--initial_capital",
         type=float,
-        default=100_000,
+        default=25_000,
         help="Initial capital",
     )
     parser.add_argument(

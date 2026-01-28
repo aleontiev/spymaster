@@ -42,6 +42,8 @@ class Position:
     parent_entry_time: datetime = None  # Original entry time (for runners, tracks the first entry)
     parent_entry_option_price: float = None  # Original entry option price (for runners)
     num_contracts: int = 10  # Number of contracts in this position
+    is_vwap_breach: bool = False  # True if this is a VWAP breach trade (uses wider trailing stop)
+    took_1sd_partial: bool = False  # True if we've already taken 20% partial profit at +1σ
 
     def __post_init__(self):
         if self.barrier_start_time is None:
@@ -84,7 +86,7 @@ class BacktestConfig:
     """Backtest configuration."""
     stop_loss_pct: float = 10.0
     position_size_pct: float = 5.0
-    initial_capital: float = 100_000.0
+    initial_capital: float = 25_000.0
     spread_cost_pct: float = 0.5
     commission_per_contract: float = 0.65
     contracts_per_trade: int = 10
@@ -96,6 +98,10 @@ class BacktestConfig:
     trailing_stop_distance_pct: float = 5.0
     entry_slippage_pct: float = 0.5  # Slippage on entry fills
     exit_slippage_pct: float = 0.5  # Slippage on exit fills
+    # Power hour boost: max position size during 2-4pm ET
+    power_hour_boost_enabled: bool = True
+    power_hour_start_minutes: int = 14 * 60  # 2:00 PM ET (minutes from midnight)
+    power_hour_end_minutes: int = 16 * 60    # 4:00 PM ET (minutes from midnight)
 
 
 @dataclass
@@ -110,6 +116,9 @@ class PendingEntry:
     confidence: float
     confluence_count: int
     agreeing_models: Tuple[str, ...]
+    is_early_trade: bool = False  # True if this is an early window trade (9:45-10:00, ATM)
+    is_vwap_breach: bool = False  # True if this is a VWAP breach trade (5% position, OTM)
+    position_size_bonus: float = 0.0  # Dynamic position size bonus (0.0 to 0.02)
 
 
 @dataclass

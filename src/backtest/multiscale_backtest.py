@@ -104,7 +104,7 @@ class Trade:
 @dataclass
 class BacktestConfig:
     """Backtest configuration."""
-    initial_capital: float = 100_000
+    initial_capital: float = 25_000
     max_position_pct: float = 0.05  # 5% of capital per trade
     options_multiplier: int = 100
     min_confidence: float = 0.0  # Minimum model confidence to trade
@@ -1013,7 +1013,7 @@ def parse_args():
                         help="End date (YYYY-MM-DD)")
 
     # Backtest config
-    parser.add_argument("--initial-capital", type=float, default=100_000,
+    parser.add_argument("--initial-capital", type=float, default=25_000,
                         help="Initial capital")
     parser.add_argument("--max-position-pct", type=float, default=0.05,
                         help="Max position as percent of equity")

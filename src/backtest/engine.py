@@ -94,7 +94,7 @@ class Trade:
 @dataclass
 class BacktestConfig:
     """Configuration for backtesting."""
-    initial_capital: float = 100_000.0
+    initial_capital: float = 25_000.0
     max_position_size: float = 0.1  # 10% of capital per position
     slippage_bps: float = 10.0  # 10 basis points slippage
     commission_per_contract: float = 0.65  # Typical options commission
@@ -858,7 +858,7 @@ def test_backtest_engine() -> None:
     print("=" * 60)
 
     # Create engine
-    config = BacktestConfig(initial_capital=100_000)
+    config = BacktestConfig(initial_capital=25_000)
     engine = BacktestEngine(config)
 
     # Simulate a trading day

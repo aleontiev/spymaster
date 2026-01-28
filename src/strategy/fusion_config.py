@@ -45,12 +45,19 @@ class TradingWindow:
     market_open_minute: int = 30
     market_close_hour: int = 16
     market_close_minute: int = 0
+    # Early trading window: allow 1m+5m+heuristic trades from 9:45-10:00
+    early_window_start_minutes: int = 15  # Start of early window (9:45)
+    early_window_end_minutes: int = 30    # End of early window (10:00)
 
     @property
     def market_minutes(self) -> int:
         """Total minutes in trading day."""
         return (self.market_close_hour * 60 + self.market_close_minute) - \
                (self.market_open_hour * 60 + self.market_open_minute)
+
+    def is_early_window(self, minutes_elapsed: int) -> bool:
+        """Check if we're in the early trading window (9:45-10:00)."""
+        return self.early_window_start_minutes <= minutes_elapsed < self.early_window_end_minutes
 
 
 @dataclass
@@ -88,38 +95,39 @@ class FusionConfig:
 
 
 # Default model configurations based on the plan
-# Thresholds calibrated for ~15 signals/day per model on 2023-2025 data
+# Thresholds: Models trained on top 5% moves (2023-2025 data, Sept-Dec reserved for OOS)
+# v3/v2-5pct models: Trained with ~5% LONG, ~5% SHORT, ~90% HOLD label distribution
 DEFAULT_MODEL_CONFIGS: List[PercentileModelConfig] = [
     PercentileModelConfig(
         name="15m",
         lejepa_path="data/checkpoints/lejepa-60-15/lejepa_best.pt",
-        policy_path="data/checkpoints/percentile-60-15-v2/entry_policy_best.pt",
+        policy_path="data/checkpoints/percentile-60-15-v3-5pct/entry_policy_best.pt",
         context_len=60,
         horizon_minutes=15,
-        long_threshold=0.5171,  # Calibrated for ~15 LONG signals/day
-        short_threshold=0.6009,  # Calibrated for ~15 SHORT signals/day
+        long_threshold=0.50,  # Starting point, calibrate via backtest
+        short_threshold=0.50,  # Starting point, calibrate via backtest
         base_weight=0.333,
         min_context_minutes=60,
     ),
     PercentileModelConfig(
         name="5m",
-        lejepa_path="data/checkpoints/lejepa-15-5-v1/lejepa_best.pt",  # v1 (v2 overfit to HOLD)
-        policy_path="data/checkpoints/percentile-15-5-v1/entry_policy_best.pt",  # v1 has balanced predictions
+        lejepa_path="data/checkpoints/lejepa-15-5-v1/lejepa_best.pt",
+        policy_path="data/checkpoints/percentile-15-5-v2-5pct/entry_policy_best.pt",
         context_len=15,
         horizon_minutes=5,
-        long_threshold=0.4973,  # Calibrated for ~15 LONG signals/day
-        short_threshold=0.5534,  # Calibrated for ~15 SHORT signals/day
+        long_threshold=0.50,  # Starting point, calibrate via backtest
+        short_threshold=0.50,  # Starting point, calibrate via backtest
         base_weight=0.333,
         min_context_minutes=15,
     ),
     PercentileModelConfig(
         name="1m",
         lejepa_path="data/checkpoints/lejepa-5-1-v1/lejepa_best.pt",
-        policy_path="data/checkpoints/percentile-5-1-v1/entry_policy_best.pt",
+        policy_path="data/checkpoints/percentile-5-1-v2-5pct/entry_policy_best.pt",
         context_len=5,
         horizon_minutes=1,
-        long_threshold=0.5723,  # Calibrated for ~15 LONG signals/day
-        short_threshold=0.6837,  # Calibrated for ~15 SHORT signals/day
+        long_threshold=0.50,  # Starting point, calibrate via backtest
+        short_threshold=0.50,  # Starting point, calibrate via backtest
         base_weight=0.333,
         min_context_minutes=5,
     ),

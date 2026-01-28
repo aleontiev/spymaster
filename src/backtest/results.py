@@ -49,8 +49,8 @@ def print_results(result: Dict, start_date: date, end_date: date) -> None:
     else:
         overall_win_rate = 0
 
-    final_capital = result["yearly"][-1]["final_capital"] if result["yearly"] else 100000
-    overall_return = (final_capital - 100000) / 100000 * 100
+    final_capital = result["yearly"][-1]["final_capital"] if result["yearly"] else 25000
+    overall_return = (final_capital - 25000) / 25000 * 100
 
     print(f"{'TOTAL':<8} {total_trades:>8} {overall_win_rate:>7.1f}% {overall_return:>+9.1f}% ${total_pnl:>10,.0f}")
 

@@ -2,7 +2,7 @@
 Backtest multi-scale percentile policy fusion with triple barrier exits.
 
 Combines three independently-trained percentile policy models (15m, 5m, 1m horizons)
-into a single unified trading bot using 3/3 voting fusion.
+into a single trading bot using 3/3 voting fusion.
 
 Signal Logic:
 - All 3 models must agree on direction (LONG or SHORT)
@@ -92,7 +92,7 @@ def load_data(start_date: date, end_date: date) -> Tuple[pd.DataFrame, np.ndarra
     return df, raw_closes, ohlcv_df
 
 
-def run_unified_backtest(
+def run_backtest(
     executor: MultiPercentileExecutor,
     df: pd.DataFrame,
     raw_closes: np.ndarray,
@@ -106,7 +106,7 @@ def run_unified_backtest(
     command: Optional[str] = None,
     use_heuristic: bool = True,
 ) -> Dict:
-    """Run unified backtest using all 3 models with 2/3 agreement logic."""
+    """Run backtest using all 3 models with 3/3 agreement logic."""
     from src.backtest.html_report import SignalMarker, TradeMarker, generate_html_report
 
     # Use all 3 models
@@ -116,8 +116,17 @@ def run_unified_backtest(
     all_monthly_results = []
     all_yearly_results = []
     all_trades = []
-    all_signals = {"1m": [], "5m": [], "15m": []}
+    all_signals = {"1m": [], "5m": [], "15m": [], "vwap": [], "orb": []}
+    all_missed_signals = []
     total_heuristic_rejections = 0
+
+    # Aggregate daily/weekly stats across all months
+    all_daily_results = []  # List of daily P&L percentages
+    all_weekly_results = []  # List of weekly P&L percentages
+    best_daily_pnl_pct = 0.0  # Best all-time intraday peak return
+    worst_daily_pnl_pct = 0.0  # Worst all-time intraday trough return
+    best_weekly_pnl_pct = 0.0  # Best all-time intraweek peak return
+    worst_weekly_pnl_pct = 0.0  # Worst all-time intraweek trough return
 
     for year in range(start_date.year, end_date.year + 1):
         yearly_trades = []
@@ -144,6 +153,19 @@ def run_unified_backtest(
                 metrics = backtester.run_backtest(df, raw_closes, year, month, starting_capital=yearly_capital, ohlcv_df=ohlcv_df)
 
             total_heuristic_rejections += backtester.heuristic_rejections
+
+            # Collect daily/weekly results
+            all_daily_results.extend(backtester.daily_results)
+            all_weekly_results.extend(backtester.weekly_results)
+            # Track best/worst daily/weekly P&L across all months
+            best_daily_pnl_pct = max(best_daily_pnl_pct, backtester.best_daily_pnl_pct)
+            worst_daily_pnl_pct = min(worst_daily_pnl_pct, backtester.worst_daily_pnl_pct)
+            best_weekly_pnl_pct = max(best_weekly_pnl_pct, backtester.best_weekly_pnl_pct)
+            worst_weekly_pnl_pct = min(worst_weekly_pnl_pct, backtester.worst_weekly_pnl_pct)
+
+            # Collect missed signals
+            if "missed_signals" in metrics:
+                all_missed_signals.extend(metrics.get("missed_signals", []))
 
             if metrics.get("trades", 0) > 0:
                 yearly_capital = metrics["final_capital"]
@@ -195,7 +217,7 @@ def run_unified_backtest(
                 entry_price=t.entry_underlying,
                 exit_price=t.exit_underlying,
                 is_long=t.position_type == PositionType.CALL,
-                is_win=t.pnl_pct > 0,
+                is_win=t.pnl_pct >= 0,
                 pnl_pct=t.pnl_pct,
                 pnl_dollars=t.pnl_dollars,
                 agreeing_models=getattr(t, 'agreeing_models', ()),
@@ -207,6 +229,7 @@ def run_unified_backtest(
                 num_contracts=getattr(t, 'num_contracts', 10),
                 is_runner=getattr(t, 'is_runner', False),
                 parent_entry_time=parent_ts,
+                dominant_model=getattr(t, 'dominant_model', ''),
             ))
 
         # Generate filename: SPY-{START_DATE}-{END_DATE}-{TIMESTAMP}-backtest.html
@@ -216,14 +239,42 @@ def run_unified_backtest(
         html_filename = f"SPY-{start_str}-{end_str}-{timestamp}-backtest.html"
         html_path = output_dir / html_filename
 
+        # Calculate aggregate daily/weekly stats
+        green_days = sum(1 for d in all_daily_results if d > 0)
+        red_days = sum(1 for d in all_daily_results if d <= 0)
+        total_days = len(all_daily_results)
+        daily_win_rate = (green_days / total_days * 100) if total_days > 0 else 0.0
+
+        green_weeks = sum(1 for w in all_weekly_results if w > 0)
+        red_weeks = sum(1 for w in all_weekly_results if w <= 0)
+        total_weeks = len(all_weekly_results)
+        weekly_win_rate = (green_weeks / total_weeks * 100) if total_weeks > 0 else 0.0
+
+        aggregate_metrics = {
+            "best_daily_pnl_pct": best_daily_pnl_pct,
+            "worst_daily_pnl_pct": worst_daily_pnl_pct,
+            "best_weekly_pnl_pct": best_weekly_pnl_pct,
+            "worst_weekly_pnl_pct": worst_weekly_pnl_pct,
+            "daily_win_rate": daily_win_rate,
+            "weekly_win_rate": weekly_win_rate,
+            "green_days": green_days,
+            "red_days": red_days,
+            "total_days": total_days,
+            "green_weeks": green_weeks,
+            "red_weeks": red_weeks,
+            "total_weeks": total_weeks,
+        }
+
         generate_html_report(
             ohlcv_df=ohlcv_df,
             trades=trade_markers,
             signals=all_signals,
-            combination_name="1m+5m+15m (unified)",
+            combination_name="1m+5m+15m",
             output_path=html_path,
             title=f"SPY Backtest ({start_date} to {end_date})",
             command=command,
+            missed_signals=all_missed_signals,
+            metrics=aggregate_metrics,
         )
         print(f"  HTML report saved to: {html_path}")
 
@@ -244,7 +295,9 @@ def main():
                         help="End date in YYYY-MM-DD format")
     parser.add_argument("--no-trade-first-minutes", type=int, default=15)
     parser.add_argument("--no-trade-last-minutes", type=int, default=15)
-    parser.add_argument("--stop-loss-pct", type=float, default=12.0)
+    parser.add_argument("--stop-loss-pct", type=float, default=10.0)
+    parser.add_argument("--capital", type=float, default=25000.0,
+                        help="Initial capital (default: 25000)")
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--html", action="store_true",
                         help="Generate HTML reports with interactive charts")
@@ -276,42 +329,35 @@ def main():
                         help="Path to 1m policy checkpoint")
 
     # Threshold arguments for each model
-    parser.add_argument("--15m-long-threshold", type=float, default=0.48,
+    parser.add_argument("--15m-long-threshold", type=float, default=0.49,
                         help="15m model long threshold (higher = fewer signals)")
-    parser.add_argument("--15m-short-threshold", type=float, default=0.56,
+    parser.add_argument("--15m-short-threshold", type=float, default=0.535,
                         help="15m model short threshold (higher = fewer signals)")
-    parser.add_argument("--5m-long-threshold", type=float, default=0.49,
+    parser.add_argument("--5m-long-threshold", type=float, default=0.485,
                         help="5m model long threshold (higher = fewer signals)")
-    parser.add_argument("--5m-short-threshold", type=float, default=0.51,
+    parser.add_argument("--5m-short-threshold", type=float, default=0.52,
                         help="5m model short threshold (higher = fewer signals)")
-    parser.add_argument("--1m-long-threshold", type=float, default=0.50,
+    parser.add_argument("--1m-long-threshold", type=float, default=0.49,
                         help="1m model long threshold (higher = fewer signals)")
-    parser.add_argument("--1m-short-threshold", type=float, default=0.55,
+    parser.add_argument("--1m-short-threshold", type=float, default=0.52,
                         help="1m model short threshold (higher = fewer signals)")
 
     args = parser.parse_args()
 
-    # Build full command with ALL explicit parameters for reproducibility
-    full_command = f"""uv run python backtest_multi_percentile.py \\
-    --start-date {args.start_date} \\
-    --end-date {args.end_date} \\
-    --no-trade-first-minutes {args.no_trade_first_minutes} \\
-    --no-trade-last-minutes {args.no_trade_last_minutes} \\
-    --stop-loss-pct {args.stop_loss_pct} \\
-    --15m-jepa {getattr(args, '15m_jepa')} \\
-    --15m-policy {getattr(args, '15m_policy')} \\
-    --15m-long-threshold {getattr(args, '15m_long_threshold')} \\
-    --15m-short-threshold {getattr(args, '15m_short_threshold')} \\
-    --5m-jepa {getattr(args, '5m_jepa')} \\
-    --5m-policy {getattr(args, '5m_policy')} \\
-    --5m-long-threshold {getattr(args, '5m_long_threshold')} \\
-    --5m-short-threshold {getattr(args, '5m_short_threshold')} \\
-    --1m-jepa {getattr(args, '1m_jepa')} \\
-    --1m-policy {getattr(args, '1m_policy')} \\
-    --1m-long-threshold {getattr(args, '1m_long_threshold')} \\
-    --1m-short-threshold {getattr(args, '1m_short_threshold')} \\
-    {'--use-heuristic' if args.use_heuristic else '--no-heuristic'} \\
-    --html --output-dir {args.output_dir}"""
+    # Build full command with ALL explicit parameters for reproducibility (single line for compact display)
+    full_command = (
+        f"uv run python backtest_multi_percentile.py "
+        f"--start-date {args.start_date} --end-date {args.end_date} "
+        f"--no-trade-first-minutes {args.no_trade_first_minutes} --no-trade-last-minutes {args.no_trade_last_minutes} "
+        f"--stop-loss-pct {args.stop_loss_pct} "
+        f"--15m-jepa {getattr(args, '15m_jepa')} --15m-policy {getattr(args, '15m_policy')} "
+        f"--15m-long-threshold {getattr(args, '15m_long_threshold')} --15m-short-threshold {getattr(args, '15m_short_threshold')} "
+        f"--5m-jepa {getattr(args, '5m_jepa')} --5m-policy {getattr(args, '5m_policy')} "
+        f"--5m-long-threshold {getattr(args, '5m_long_threshold')} --5m-short-threshold {getattr(args, '5m_short_threshold')} "
+        f"--1m-jepa {getattr(args, '1m_jepa')} --1m-policy {getattr(args, '1m_policy')} "
+        f"--1m-long-threshold {getattr(args, '1m_long_threshold')} --1m-short-threshold {getattr(args, '1m_short_threshold')} "
+        f"{'--use-heuristic' if args.use_heuristic else '--no-heuristic'} --html --output-dir {args.output_dir}"
+    )
 
     # Parse date strings to date objects
     start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date()
@@ -324,7 +370,7 @@ def main():
         device = torch.device(args.device)
     print(f"Using device: {device}")
 
-    print("\nRunning unified 3-model backtest (3/3 agreement logic)")
+    print("\nRunning 3-model backtest (3/3 agreement logic)")
     print(f"Heuristic confirmation: {'ENABLED' if args.use_heuristic else 'DISABLED'}")
 
     # Create output directory if generating HTML
@@ -349,11 +395,11 @@ def main():
     # Build model configs from CLI arguments (allows overriding default paths)
     # Access args with getattr since argparse converts dashes to underscores for some
     jepa_15m = getattr(args, '15m_jepa', None) or "data/checkpoints/lejepa-60-15/lejepa_best.pt"
-    policy_15m = getattr(args, '15m_policy', None) or "data/checkpoints/percentile-60-15-v2/entry_policy_best.pt"
+    policy_15m = getattr(args, '15m_policy', None) or "data/checkpoints/percentile-60-15-v3-5pct/entry_policy_best.pt"
     jepa_5m = getattr(args, '5m_jepa', None) or "data/checkpoints/lejepa-15-5-v1/lejepa_best.pt"
-    policy_5m = getattr(args, '5m_policy', None) or "data/checkpoints/percentile-15-5-v1/entry_policy_best.pt"
+    policy_5m = getattr(args, '5m_policy', None) or "data/checkpoints/percentile-15-5-v2-5pct/entry_policy_best.pt"
     jepa_1m = getattr(args, '1m_jepa', None) or "data/checkpoints/lejepa-5-1-v1/lejepa_best.pt"
-    policy_1m = getattr(args, '1m_policy', None) or "data/checkpoints/percentile-5-1-v1/entry_policy_best.pt"
+    policy_1m = getattr(args, '1m_policy', None) or "data/checkpoints/percentile-5-1-v2-5pct/entry_policy_best.pt"
 
     # Get thresholds from args
     threshold_15m_long = getattr(args, '15m_long_threshold')
@@ -418,14 +464,15 @@ def main():
     # Backtest config
     backtest_config = BacktestConfig(
         stop_loss_pct=args.stop_loss_pct,
+        initial_capital=args.capital,
     )
 
-    # Run unified backtest with all 3 models
+    # Run backtest with all 3 models
     print(f"\n{'='*60}")
-    print("RUNNING UNIFIED BACKTEST")
+    print("RUNNING BACKTEST")
     print("=" * 60)
 
-    result = run_unified_backtest(
+    result = run_backtest(
         executor=executor,
         df=df,
         raw_closes=raw_closes,
