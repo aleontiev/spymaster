@@ -42,8 +42,13 @@ class Position:
     parent_entry_time: datetime = None  # Original entry time (for runners, tracks the first entry)
     parent_entry_option_price: float = None  # Original entry option price (for runners)
     num_contracts: int = 10  # Number of contracts in this position
-    is_vwap_breach: bool = False  # True if this is a VWAP breach trade (uses wider trailing stop)
+    is_breach: bool = False  # True if this is a breakout/reversal trade (uses wider trailing stop)
+    is_reversal: bool = False  # True if this is a reversal trade (+-2σ band)
+    is_bounce: bool = False  # True if this is a VWAP bounce trade
+    is_double_breakout: bool = False  # True if this is a double breakout trade
+    is_news_event: bool = False  # True if this is a news event trade
     took_1sd_partial: bool = False  # True if we've already taken 20% partial profit at +1σ
+    quality: str = ""  # Trade quality grade: A (5%), B (4%), C (3%), D (2%)
 
     def __post_init__(self):
         if self.barrier_start_time is None:
@@ -79,11 +84,12 @@ class Trade:
     is_runner: bool = False  # True if this is a runner continuation trade
     parent_entry_time: Optional[datetime] = None  # Original entry time for runners
     parent_entry_option_price: Optional[float] = None  # Original entry option price for runners
+    quality: str = ""  # Trade quality grade: A (5%), B (4%), C (3%), D (2%)
 
 
 @dataclass
-class BacktestConfig:
-    """Backtest configuration."""
+class TradingConfig:
+    """Trading configuration (used by both backtest and live trading)."""
     stop_loss_pct: float = 10.0
     position_size_pct: float = 5.0
     initial_capital: float = 25_000.0
@@ -104,6 +110,10 @@ class BacktestConfig:
     power_hour_end_minutes: int = 16 * 60    # 4:00 PM ET (minutes from midnight)
 
 
+# Backward-compat alias
+BacktestConfig = TradingConfig
+
+
 @dataclass
 class PendingEntry:
     """A pending entry to be executed on the next minute's open."""
@@ -117,7 +127,13 @@ class PendingEntry:
     confluence_count: int
     agreeing_models: Tuple[str, ...]
     is_early_trade: bool = False  # True if this is an early window trade (9:45-10:00, ATM)
-    is_vwap_breach: bool = False  # True if this is a VWAP breach trade (5% position, OTM)
+    is_breach: bool = False  # True if this is a breakout/reversal trade
+    is_reversal: bool = False  # True if this is a reversal trade
+    is_reversal_engulfing: bool = False  # True if reversal uses engulfing pattern (5% sizing)
+    is_bounce: bool = False  # True if this is a VWAP bounce trade
+    is_bounce_engulfing: bool = False  # True if bounce uses engulfing pattern (5% sizing)
+    is_double_breakout: bool = False  # True if this is a double breakout trade
+    is_news_event: bool = False  # True if this is a news event trade
     position_size_bonus: float = 0.0  # Dynamic position size bonus (0.0 to 0.02)
 
 

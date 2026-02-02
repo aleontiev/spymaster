@@ -223,9 +223,9 @@ class TestVWAPBreachDetection:
     def test_vwap_breach_bullish(self):
         """Test bullish VWAP breach detection."""
         from src.backtest.multi_percentile import (
-            detect_vwap_breach,
+            detect_breach,
             calculate_vwap_with_bands,
-            VWAPBreachType,
+            BreachType,
         )
         import numpy as np
 
@@ -247,7 +247,7 @@ class TestVWAPBreachDetection:
         vwap, upper_1sd, lower_1sd, upper_2sd, lower_2sd = calculate_vwap_with_bands(ohlcv_df)
 
         # Test detection at index 15 (after some history)
-        signal = detect_vwap_breach(
+        signal = detect_breach(
             ohlcv_df, vwap, 15,
             upper_1sd_series=upper_1sd,
             lower_1sd_series=lower_1sd,

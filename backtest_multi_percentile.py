@@ -11,6 +11,7 @@ Signal Logic:
 Usage:
     uv run python backtest_multi_percentile.py --start-date 2024-01-01 --end-date 2024-12-31
 """
+
 import argparse
 from datetime import date, datetime
 from pathlib import Path
@@ -78,11 +79,12 @@ def load_data(start_date: date, end_date: date) -> Tuple[pd.DataFrame, np.ndarra
     if "timestamp" in df.columns:
         df = df.drop(columns=["timestamp"])
 
-    exclude_cols = {'timestamp', 'date', 'datetime', 'index', 'symbol', 'underlying'}
+    exclude_cols = {"timestamp", "date", "datetime", "index", "symbol", "underlying"}
     feature_cols = sorted([
-        col for col in df.columns
+        col
+        for col in df.columns
         if col.lower() not in exclude_cols
-        and df[col].dtype in ['float64', 'float32', 'int64', 'int32']
+        and df[col].dtype in ["float64", "float32", "int64", "int32"]
     ])
     df = df[feature_cols]
 
@@ -116,7 +118,16 @@ def run_backtest(
     all_monthly_results = []
     all_yearly_results = []
     all_trades = []
-    all_signals = {"1m": [], "5m": [], "15m": [], "vwap": [], "orb": []}
+    all_signals = {
+        "1m": [],
+        "5m": [],
+        "15m": [],
+        "breach": [],
+        "double_breakout": [],
+        "reversal": [],
+        "bounce": [],
+        "news_event": [],
+    }
     all_missed_signals = []
     total_heuristic_rejections = 0
 
@@ -141,16 +152,32 @@ def run_backtest(
             if mask.sum() < 100:
                 continue
 
-            backtester = MultiPercentileBacktester(filtered_executor, config, device, use_heuristic=use_heuristic)
+            backtester = MultiPercentileBacktester(
+                filtered_executor, config, device, use_heuristic=use_heuristic
+            )
 
             if generate_html:
-                metrics, month_signals = backtester.run_backtest_with_signals(
-                    df, raw_closes, year, month, executor, starting_capital=yearly_capital, ohlcv_df=ohlcv_df
+                metrics, month_signals = backtester.run_backtest(
+                    df,
+                    raw_closes,
+                    year,
+                    month,
+                    executor,
+                    starting_capital=yearly_capital,
+                    ohlcv_df=ohlcv_df,
                 )
                 for model, sigs in month_signals.items():
                     all_signals[model].extend(sigs)
             else:
-                metrics = backtester.run_backtest(df, raw_closes, year, month, starting_capital=yearly_capital, ohlcv_df=ohlcv_df)
+                metrics, _ = backtester.run_backtest(
+                    df,
+                    raw_closes,
+                    year,
+                    month,
+                    executor,
+                    starting_capital=yearly_capital,
+                    ohlcv_df=ohlcv_df,
+                )
 
             total_heuristic_rejections += backtester.heuristic_rejections
 
@@ -172,11 +199,7 @@ def run_backtest(
                 yearly_trades.extend(backtester.trades)
                 all_trades.extend(backtester.trades)
 
-            monthly_result = {
-                "year": year,
-                "month": month,
-                **metrics
-            }
+            monthly_result = {"year": year, "month": month, **metrics}
             all_monthly_results.append(monthly_result)
 
         # Yearly totals
@@ -187,10 +210,16 @@ def run_backtest(
                 "trades": len(yearly_trades),
                 "win_rate": len(wins) / len(yearly_trades) * 100,
                 "total_pnl_dollars": sum(t.pnl_dollars for t in yearly_trades),
-                "total_return_pct": (yearly_capital - config.initial_capital) / config.initial_capital * 100,
+                "total_return_pct": (yearly_capital - config.initial_capital)
+                / config.initial_capital
+                * 100,
                 "final_capital": yearly_capital,
-                "long_trades": len([t for t in yearly_trades if t.position_type == PositionType.CALL]),
-                "short_trades": len([t for t in yearly_trades if t.position_type == PositionType.PUT]),
+                "long_trades": len([
+                    t for t in yearly_trades if t.position_type == PositionType.CALL
+                ]),
+                "short_trades": len([
+                    t for t in yearly_trades if t.position_type == PositionType.PUT
+                ]),
             }
         else:
             yearly_result = {
@@ -211,26 +240,29 @@ def run_backtest(
         trade_markers = []
         for t in all_trades:
             parent_ts = int(t.parent_entry_time.timestamp()) if t.parent_entry_time else 0
-            trade_markers.append(TradeMarker(
-                entry_time=int(t.entry_time.timestamp()),
-                exit_time=int(t.exit_time.timestamp()),
-                entry_price=t.entry_underlying,
-                exit_price=t.exit_underlying,
-                is_long=t.position_type == PositionType.CALL,
-                is_win=t.pnl_pct >= 0,
-                pnl_pct=t.pnl_pct,
-                pnl_dollars=t.pnl_dollars,
-                agreeing_models=getattr(t, 'agreeing_models', ()),
-                exit_reason=t.exit_reason,
-                capital_after=t.capital_after,
-                contract=getattr(t, 'contract', ''),
-                entry_option_price=t.entry_option_price,
-                exit_option_price=t.exit_option_price,
-                num_contracts=getattr(t, 'num_contracts', 10),
-                is_runner=getattr(t, 'is_runner', False),
-                parent_entry_time=parent_ts,
-                dominant_model=getattr(t, 'dominant_model', ''),
-            ))
+            trade_markers.append(
+                TradeMarker(
+                    entry_time=int(t.entry_time.timestamp()),
+                    exit_time=int(t.exit_time.timestamp()),
+                    entry_price=t.entry_underlying,
+                    exit_price=t.exit_underlying,
+                    is_long=t.position_type == PositionType.CALL,
+                    is_win=t.pnl_pct >= 0,
+                    pnl_pct=t.pnl_pct,
+                    pnl_dollars=t.pnl_dollars,
+                    agreeing_models=getattr(t, "agreeing_models", ()),
+                    exit_reason=t.exit_reason,
+                    capital_after=t.capital_after,
+                    contract=getattr(t, "contract", ""),
+                    entry_option_price=t.entry_option_price,
+                    exit_option_price=t.exit_option_price,
+                    num_contracts=getattr(t, "num_contracts", 10),
+                    is_runner=getattr(t, "is_runner", False),
+                    parent_entry_time=parent_ts,
+                    dominant_model=getattr(t, "dominant_model", ""),
+                    quality=getattr(t, "quality", ""),
+                )
+            )
 
         # Generate filename: SPY-{START_DATE}-{END_DATE}-{TIMESTAMP}-backtest.html
         start_str = start_date.strftime("%Y%m%d")
@@ -289,58 +321,113 @@ def run_backtest(
 
 def main():
     parser = argparse.ArgumentParser(description="Backtest multi-scale percentile policy fusion")
-    parser.add_argument("--start-date", type=str, default="2024-01-01",
-                        help="Start date in YYYY-MM-DD format")
-    parser.add_argument("--end-date", type=str, default="2024-12-31",
-                        help="End date in YYYY-MM-DD format")
+    parser.add_argument(
+        "--start-date", type=str, default="2024-01-01", help="Start date in YYYY-MM-DD format"
+    )
+    parser.add_argument(
+        "--end-date", type=str, default="2024-12-31", help="End date in YYYY-MM-DD format"
+    )
     parser.add_argument("--no-trade-first-minutes", type=int, default=15)
     parser.add_argument("--no-trade-last-minutes", type=int, default=15)
     parser.add_argument("--stop-loss-pct", type=float, default=10.0)
-    parser.add_argument("--capital", type=float, default=25000.0,
-                        help="Initial capital (default: 25000)")
+    parser.add_argument(
+        "--capital", type=float, default=25000.0, help="Initial capital (default: 25000)"
+    )
     parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--html", action="store_true",
-                        help="Generate HTML reports with interactive charts")
-    parser.add_argument("--output-dir", type=str, default="reports",
-                        help="Output directory for HTML reports")
-    parser.add_argument("--use-heuristic", action="store_true", default=True,
-                        help="Use heuristic model for final confirmation (default: True)")
-    parser.add_argument("--no-heuristic", dest="use_heuristic", action="store_false",
-                        help="Disable heuristic model confirmation")
+    parser.add_argument(
+        "--html", action="store_true", help="Generate HTML reports with interactive charts"
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default="reports", help="Output directory for HTML reports"
+    )
+    parser.add_argument(
+        "--use-heuristic",
+        action="store_true",
+        default=True,
+        help="Use heuristic model for final confirmation (default: True)",
+    )
+    parser.add_argument(
+        "--no-heuristic",
+        dest="use_heuristic",
+        action="store_false",
+        help="Disable heuristic model confirmation",
+    )
 
     # Model checkpoint paths (for reproducibility in reports)
-    parser.add_argument("--15m-jepa", type=str,
-                        default="data/checkpoints/lejepa-60-15/lejepa_best.pt",
-                        help="Path to 15m LeJEPA checkpoint")
-    parser.add_argument("--15m-policy", type=str,
-                        default="data/checkpoints/percentile-60-15-v2/entry_policy_best.pt",
-                        help="Path to 15m policy checkpoint")
-    parser.add_argument("--5m-jepa", type=str,
-                        default="data/checkpoints/lejepa-15-5-v1/lejepa_best.pt",
-                        help="Path to 5m LeJEPA checkpoint")
-    parser.add_argument("--5m-policy", type=str,
-                        default="data/checkpoints/percentile-15-5-v1/entry_policy_best.pt",
-                        help="Path to 5m policy checkpoint")
-    parser.add_argument("--1m-jepa", type=str,
-                        default="data/checkpoints/lejepa-5-1-v1/lejepa_best.pt",
-                        help="Path to 1m LeJEPA checkpoint")
-    parser.add_argument("--1m-policy", type=str,
-                        default="data/checkpoints/percentile-5-1-v1/entry_policy_best.pt",
-                        help="Path to 1m policy checkpoint")
+    parser.add_argument(
+        "--15m-jepa",
+        type=str,
+        default="data/checkpoints/lejepa-60-15/lejepa_best.pt",
+        help="Path to 15m LeJEPA checkpoint",
+    )
+    parser.add_argument(
+        "--15m-policy",
+        type=str,
+        default="data/checkpoints/percentile-60-15-v2/entry_policy_best.pt",
+        help="Path to 15m policy checkpoint",
+    )
+    parser.add_argument(
+        "--5m-jepa",
+        type=str,
+        default="data/checkpoints/lejepa-15-5-v1/lejepa_best.pt",
+        help="Path to 5m LeJEPA checkpoint",
+    )
+    parser.add_argument(
+        "--5m-policy",
+        type=str,
+        default="data/checkpoints/percentile-15-5-v1/entry_policy_best.pt",
+        help="Path to 5m policy checkpoint",
+    )
+    parser.add_argument(
+        "--1m-jepa",
+        type=str,
+        default="data/checkpoints/lejepa-5-1-v1/lejepa_best.pt",
+        help="Path to 1m LeJEPA checkpoint",
+    )
+    parser.add_argument(
+        "--1m-policy",
+        type=str,
+        default="data/checkpoints/percentile-5-1-v1/entry_policy_best.pt",
+        help="Path to 1m policy checkpoint",
+    )
 
     # Threshold arguments for each model
-    parser.add_argument("--15m-long-threshold", type=float, default=0.49,
-                        help="15m model long threshold (higher = fewer signals)")
-    parser.add_argument("--15m-short-threshold", type=float, default=0.535,
-                        help="15m model short threshold (higher = fewer signals)")
-    parser.add_argument("--5m-long-threshold", type=float, default=0.485,
-                        help="5m model long threshold (higher = fewer signals)")
-    parser.add_argument("--5m-short-threshold", type=float, default=0.52,
-                        help="5m model short threshold (higher = fewer signals)")
-    parser.add_argument("--1m-long-threshold", type=float, default=0.49,
-                        help="1m model long threshold (higher = fewer signals)")
-    parser.add_argument("--1m-short-threshold", type=float, default=0.52,
-                        help="1m model short threshold (higher = fewer signals)")
+    parser.add_argument(
+        "--15m-long-threshold",
+        type=float,
+        default=0.49,
+        help="15m model long threshold (higher = fewer signals)",
+    )
+    parser.add_argument(
+        "--15m-short-threshold",
+        type=float,
+        default=0.535,
+        help="15m model short threshold (higher = fewer signals)",
+    )
+    parser.add_argument(
+        "--5m-long-threshold",
+        type=float,
+        default=0.485,
+        help="5m model long threshold (higher = fewer signals)",
+    )
+    parser.add_argument(
+        "--5m-short-threshold",
+        type=float,
+        default=0.52,
+        help="5m model short threshold (higher = fewer signals)",
+    )
+    parser.add_argument(
+        "--1m-long-threshold",
+        type=float,
+        default=0.49,
+        help="1m model long threshold (higher = fewer signals)",
+    )
+    parser.add_argument(
+        "--1m-short-threshold",
+        type=float,
+        default=0.52,
+        help="1m model short threshold (higher = fewer signals)",
+    )
 
     args = parser.parse_args()
 
@@ -394,20 +481,29 @@ def main():
 
     # Build model configs from CLI arguments (allows overriding default paths)
     # Access args with getattr since argparse converts dashes to underscores for some
-    jepa_15m = getattr(args, '15m_jepa', None) or "data/checkpoints/lejepa-60-15/lejepa_best.pt"
-    policy_15m = getattr(args, '15m_policy', None) or "data/checkpoints/percentile-60-15-v3-5pct/entry_policy_best.pt"
-    jepa_5m = getattr(args, '5m_jepa', None) or "data/checkpoints/lejepa-15-5-v1/lejepa_best.pt"
-    policy_5m = getattr(args, '5m_policy', None) or "data/checkpoints/percentile-15-5-v2-5pct/entry_policy_best.pt"
-    jepa_1m = getattr(args, '1m_jepa', None) or "data/checkpoints/lejepa-5-1-v1/lejepa_best.pt"
-    policy_1m = getattr(args, '1m_policy', None) or "data/checkpoints/percentile-5-1-v2-5pct/entry_policy_best.pt"
+    jepa_15m = getattr(args, "15m_jepa", None) or "data/checkpoints/lejepa-60-15/lejepa_best.pt"
+    policy_15m = (
+        getattr(args, "15m_policy", None)
+        or "data/checkpoints/percentile-60-15-v3-5pct/entry_policy_best.pt"
+    )
+    jepa_5m = getattr(args, "5m_jepa", None) or "data/checkpoints/lejepa-15-5-v1/lejepa_best.pt"
+    policy_5m = (
+        getattr(args, "5m_policy", None)
+        or "data/checkpoints/percentile-15-5-v2-5pct/entry_policy_best.pt"
+    )
+    jepa_1m = getattr(args, "1m_jepa", None) or "data/checkpoints/lejepa-5-1-v1/lejepa_best.pt"
+    policy_1m = (
+        getattr(args, "1m_policy", None)
+        or "data/checkpoints/percentile-5-1-v2-5pct/entry_policy_best.pt"
+    )
 
     # Get thresholds from args
-    threshold_15m_long = getattr(args, '15m_long_threshold')
-    threshold_15m_short = getattr(args, '15m_short_threshold')
-    threshold_5m_long = getattr(args, '5m_long_threshold')
-    threshold_5m_short = getattr(args, '5m_short_threshold')
-    threshold_1m_long = getattr(args, '1m_long_threshold')
-    threshold_1m_short = getattr(args, '1m_short_threshold')
+    threshold_15m_long = getattr(args, "15m_long_threshold")
+    threshold_15m_short = getattr(args, "15m_short_threshold")
+    threshold_5m_long = getattr(args, "5m_long_threshold")
+    threshold_5m_short = getattr(args, "5m_short_threshold")
+    threshold_1m_long = getattr(args, "1m_long_threshold")
+    threshold_1m_short = getattr(args, "1m_short_threshold")
 
     custom_model_configs = [
         PercentileModelConfig(
@@ -455,8 +551,10 @@ def main():
 
     print("\nModel Configuration:")
     for name, info in executor.get_model_info().items():
-        print(f"  {name}: context={info['context_len']}, horizon={info['horizon_minutes']}, "
-              f"thresholds=(L:{info['long_threshold']}, S:{info['short_threshold']})")
+        print(
+            f"  {name}: context={info['context_len']}, horizon={info['horizon_minutes']}, "
+            f"thresholds=(L:{info['long_threshold']}, S:{info['short_threshold']})"
+        )
 
     # Load data
     df, raw_closes, ohlcv_df = load_data(start_date, end_date)
@@ -468,7 +566,7 @@ def main():
     )
 
     # Run backtest with all 3 models
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("RUNNING BACKTEST")
     print("=" * 60)
 

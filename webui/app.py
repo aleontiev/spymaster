@@ -3196,6 +3196,176 @@ def backtest_viewer_page(name: str):
     return render_template("backtest_viewer.html", backtest_name=name)
 
 
+@app.route("/live")
+def live_page():
+    """Live paper trading dashboard."""
+    return render_template("live.html")
+
+
+# =============================================================================
+# Live Trading API Endpoints
+# =============================================================================
+
+_trading_service = None
+_simulation_service = None
+_active_mode = "none"  # "none" | "live" | "sim"
+
+
+def _get_trading_service():
+    """Get the TradingService singleton (lazy import)."""
+    global _trading_service
+    if _trading_service is None:
+        from src.execution.trading_service import TradingService
+        _trading_service = TradingService.instance()
+    return _trading_service
+
+
+def _get_simulation_service():
+    """Get the SimulationService singleton (lazy import)."""
+    global _simulation_service
+    if _simulation_service is None:
+        from src.execution.simulation_service import SimulationService
+        _simulation_service = SimulationService.instance()
+    return _simulation_service
+
+
+def _get_active_service():
+    """Get whichever service is currently active, or None."""
+    if _active_mode == "live":
+        return _get_trading_service()
+    elif _active_mode == "sim":
+        return _get_simulation_service()
+    return None
+
+
+@app.route("/api/live/start", methods=["POST"])
+def api_live_start():
+    """Start the paper trader or simulation."""
+    global _active_mode
+    data = request.get_json() or {}
+    mode = data.get("mode", "live")
+
+    try:
+        if mode == "sim":
+            service = _get_simulation_service()
+            service.start(
+                underlying=data.get("underlying", "SPY"),
+                start_date=data.get("start_date"),
+                end_date=data.get("end_date"),
+                capital=data.get("capital", 25000.0),
+                speed=data.get("speed", 30.0),
+                use_heuristic=data.get("use_heuristic", True),
+                dry_run=True,
+            )
+            _active_mode = "sim"
+        else:
+            service = _get_trading_service()
+            service.start(
+                capital=data.get("capital", 25000.0),
+                session_id=data.get("session_id", "paper_trading"),
+                use_heuristic=data.get("use_heuristic", True),
+                dry_run=data.get("dry_run", False),
+            )
+            _active_mode = "live"
+        return jsonify({"ok": True, "mode": _active_mode})
+    except RuntimeError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/live/stop", methods=["POST"])
+def api_live_stop():
+    """Stop whichever service is active."""
+    global _active_mode
+    service = _get_active_service()
+    if service is not None:
+        service.stop()
+    _active_mode = "none"
+    return jsonify({"ok": True})
+
+
+@app.route("/api/live/snapshot")
+def api_live_snapshot():
+    """Get current state snapshot from the active service."""
+    service = _get_active_service()
+    if service is None:
+        # Return a minimal stopped snapshot without touching the database
+        return jsonify({
+            "is_running": False,
+            "error": None,
+            "started_at": None,
+            "config": {},
+            "timestamp": None,
+        })
+    snapshot = service.get_snapshot()
+    return jsonify(snapshot)
+
+
+@app.route("/api/live/trades")
+def api_live_trades():
+    """Get trade history and daily stats from the active service."""
+    service = _get_active_service()
+    if service is None:
+        return jsonify({
+            "trades": [],
+            "daily_trades": 0,
+            "daily_pnl": 0.0,
+            "capital": 25000.0,
+            "win_rate": 0.0,
+        })
+    trades = service.get_trades()
+    return jsonify(trades)
+
+
+@app.route("/api/live/candles")
+def api_live_candles():
+    """Get full chart data (OHLCV, volume, VWAP, OR) for TrainingChartView."""
+    service = _get_active_service()
+    if service is None:
+        return jsonify({})
+    return jsonify(service.get_chart_data())
+
+
+@app.route("/api/live/speed", methods=["POST"])
+def api_live_speed():
+    """Change simulation playback speed."""
+    if _active_mode != "sim":
+        return jsonify({"ok": False, "error": "Not in simulation mode"}), 400
+    data = request.get_json() or {}
+    speed = data.get("speed", 30.0)
+    service = _get_simulation_service()
+    service.set_speed(speed)
+    return jsonify({"ok": True, "speed": speed})
+
+
+@app.route("/api/live/seek", methods=["POST"])
+def api_live_seek():
+    """Seek to a specific bar in the simulation."""
+    if _active_mode != "sim":
+        return jsonify({"ok": False, "error": "Not in simulation mode"}), 400
+    data = request.get_json() or {}
+    bar_index = data.get("bar_index", 0)
+    service = _get_simulation_service()
+    service.seek(bar_index)
+    return jsonify({"ok": True, "bar_index": bar_index})
+
+
+@app.route("/api/live/pause", methods=["POST"])
+def api_live_pause():
+    """Pause or resume the simulation."""
+    if _active_mode != "sim":
+        return jsonify({"ok": False, "error": "Not in simulation mode"}), 400
+    data = request.get_json() or {}
+    paused = data.get("paused", True)
+    service = _get_simulation_service()
+    if paused:
+        service.pause()
+    else:
+        service.resume()
+    return jsonify({"ok": True, "paused": paused})
+
+
 # =============================================================================
 # Main
 # =============================================================================

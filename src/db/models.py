@@ -461,6 +461,105 @@ class DatasetDefaults(Base):
         }
 
 
+class LivePositionState(Base):
+    """
+    Live trading position state for persistence.
+
+    Replaces JSON file storage for position state. Stores current active
+    position and trading session state for recovery after restarts.
+
+    Examples:
+        # Active call position
+        LivePositionState(
+            session_id="paper_20250127",
+            has_active_position=True,
+            position_type="call",
+            option_symbol="SPY250127C00600000",
+            ...
+        )
+    """
+    __tablename__ = "live_position_state"
+
+    # Single row per trading session
+    session_id = Column(String(50), primary_key=True, default="default")
+
+    # Active position data (nullable when no position)
+    has_active_position = Column(Boolean, default=False)
+    position_id = Column(String(100), nullable=True)
+    position_type = Column(String(10), nullable=True)  # "call" or "put"
+    entry_time = Column(DateTime, nullable=True)
+    entry_option_price = Column(Float, nullable=True)
+    option_symbol = Column(String(50), nullable=True)
+    strike = Column(Float, nullable=True)
+    num_contracts = Column(Integer, nullable=True)
+    entry_underlying_price = Column(Float, nullable=True)
+    position_value = Column(Float, nullable=True)
+    dominant_model = Column(String(50), nullable=True)
+    max_hold_minutes = Column(Integer, nullable=True)
+    barrier_start_time = Column(DateTime, nullable=True)
+    confluence_count = Column(Integer, default=2)
+    peak_pnl_pct = Column(Float, default=0.0)
+    breakeven_activated = Column(Boolean, default=False)
+    is_runner = Column(Boolean, default=False)
+    runner_start_time = Column(DateTime, nullable=True)
+    runner_max_hold_minutes = Column(Integer, default=15)
+    runner_peak_pnl_pct = Column(Float, default=0.0)
+    runner_entry_pnl_pct = Column(Float, default=0.0)
+    is_breach = Column('is_vwap_breach', Boolean, default=False)
+    is_reversal = Column(Boolean, default=False)
+    is_bounce = Column(Boolean, default=False)
+    renewals = Column(Integer, default=0)
+
+    # Session state
+    daily_trades = Column(Integer, default=0)
+    daily_pnl = Column(Float, default=0.0)
+    capital = Column(Float, default=25000.0)
+    last_trade_date = Column(String(10), nullable=True)
+
+    # Recent completed trades (JSON array of trade dicts)
+    completed_trades_json = Column(JSON, default=list)
+
+    # Timestamps
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for easy access."""
+        return {
+            "session_id": self.session_id,
+            "has_active_position": self.has_active_position,
+            "position_id": self.position_id,
+            "position_type": self.position_type,
+            "entry_time": self.entry_time.isoformat() if self.entry_time else None,
+            "entry_option_price": self.entry_option_price,
+            "option_symbol": self.option_symbol,
+            "strike": self.strike,
+            "num_contracts": self.num_contracts,
+            "entry_underlying_price": self.entry_underlying_price,
+            "position_value": self.position_value,
+            "dominant_model": self.dominant_model,
+            "max_hold_minutes": self.max_hold_minutes,
+            "barrier_start_time": self.barrier_start_time.isoformat() if self.barrier_start_time else None,
+            "confluence_count": self.confluence_count,
+            "peak_pnl_pct": self.peak_pnl_pct,
+            "breakeven_activated": self.breakeven_activated,
+            "is_runner": self.is_runner,
+            "runner_start_time": self.runner_start_time.isoformat() if self.runner_start_time else None,
+            "runner_max_hold_minutes": self.runner_max_hold_minutes,
+            "runner_peak_pnl_pct": self.runner_peak_pnl_pct,
+            "runner_entry_pnl_pct": self.runner_entry_pnl_pct,
+            "is_breach": self.is_breach,
+            "is_reversal": self.is_reversal,
+            "is_bounce": self.is_bounce,
+            "renewals": self.renewals,
+            "daily_trades": self.daily_trades,
+            "daily_pnl": self.daily_pnl,
+            "capital": self.capital,
+            "last_trade_date": self.last_trade_date,
+            "completed_trades": self.completed_trades_json or [],
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class MarketCalendar(Base):
     """
     Market calendar tracking for trading days.

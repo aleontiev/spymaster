@@ -1,0 +1,878 @@
+{% extends "base.html" %}
+
+{% block title %}Live Trading - Spymaster{% endblock %}
+
+{% block content %}
+<div x-data="liveApp()" x-init="init()">
+    <!-- Start Modal Overlay -->
+    <div x-show="showConfig" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+         @keydown.escape.window="showConfig = false">
+        <div class="bg-neutral-800 border border-neutral-700 rounded-lg shadow-2xl w-full max-w-md mx-4 p-6"
+             @click.outside="showConfig = false">
+            <h3 class="text-lg font-medium text-neutral-100 mb-4">Start Trading</h3>
+
+            <div class="space-y-4">
+                <!-- Underlying -->
+                <div>
+                    <label class="block text-xs text-neutral-400 mb-1">Underlying</label>
+                    <select x-model="startConfig.underlying"
+                            class="w-full bg-neutral-900 border border-neutral-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-primary-500">
+                        <option value="SPY">SPY</option>
+                        <option value="QQQ">QQQ</option>
+                        <option value="AMD">AMD</option>
+                        <option value="AMZN">AMZN</option>
+                        <option value="GOOGL">GOOGL</option>
+                        <option value="HIMS">HIMS</option>
+                        <option value="GLD">GLD</option>
+                    </select>
+                </div>
+
+                <!-- Mode -->
+                <div>
+                    <label class="block text-xs text-neutral-400 mb-2">Mode</label>
+                    <div class="flex gap-4">
+                        <label class="flex items-center gap-2 text-sm text-neutral-300 cursor-pointer">
+                            <input type="radio" value="live" x-model="startConfig.mode"
+                                   class="text-primary-500 focus:ring-primary-500 bg-neutral-900 border-neutral-600">
+                            Live Trading
+                        </label>
+                        <label class="flex items-center gap-2 text-sm text-neutral-300 cursor-pointer">
+                            <input type="radio" value="sim" x-model="startConfig.mode"
+                                   class="text-primary-500 focus:ring-primary-500 bg-neutral-900 border-neutral-600">
+                            Historical Simulation
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Sim-only fields -->
+                <template x-if="startConfig.mode === 'sim'">
+                    <div class="space-y-3 pl-2 border-l-2 border-neutral-700">
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-xs text-neutral-400 mb-1">Start Date</label>
+                                <input type="date" x-model="startConfig.start_date"
+                                       class="w-full bg-neutral-900 border border-neutral-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-primary-500">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-neutral-400 mb-1">End Date</label>
+                                <input type="date" x-model="startConfig.end_date"
+                                       class="w-full bg-neutral-900 border border-neutral-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-primary-500">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-xs text-neutral-400 mb-1">Playback Speed</label>
+                            <select x-model.number="startConfig.speed"
+                                    class="w-full bg-neutral-900 border border-neutral-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-primary-500">
+                                <option value="6">6x (10 sec/bar)</option>
+                                <option value="12">12x (5 sec/bar)</option>
+                                <option value="30" selected>30x (2 sec/bar)</option>
+                                <option value="60">60x (1 sec/bar)</option>
+                                <option value="120">120x (0.5 sec/bar)</option>
+                            </select>
+                        </div>
+                    </div>
+                </template>
+
+                <!-- Capital -->
+                <div>
+                    <label class="block text-xs text-neutral-400 mb-1">Capital ($)</label>
+                    <input type="number" x-model.number="startConfig.capital" step="1000"
+                           class="w-full bg-neutral-900 border border-neutral-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-primary-500">
+                </div>
+
+                <!-- Live-only fields -->
+                <template x-if="startConfig.mode === 'live'">
+                    <div>
+                        <label class="block text-xs text-neutral-400 mb-1">Session ID</label>
+                        <input type="text" x-model="startConfig.session_id"
+                               class="w-full bg-neutral-900 border border-neutral-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-primary-500">
+                    </div>
+                </template>
+
+                <!-- Checkboxes -->
+                <div class="flex items-center gap-4">
+                    <label class="flex items-center gap-2 text-sm text-neutral-300 cursor-pointer">
+                        <input type="checkbox" x-model="startConfig.use_heuristic"
+                               class="rounded bg-neutral-900 border-neutral-600 text-primary-500 focus:ring-primary-500">
+                        Heuristic Filter
+                    </label>
+                    <template x-if="startConfig.mode === 'live'">
+                        <label class="flex items-center gap-2 text-sm text-neutral-300 cursor-pointer">
+                            <input type="checkbox" x-model="startConfig.dry_run"
+                                   class="rounded bg-neutral-900 border-neutral-600 text-primary-500 focus:ring-primary-500">
+                            Dry Run
+                        </label>
+                    </template>
+                </div>
+            </div>
+
+            <div class="flex justify-end gap-2 mt-6 pt-4 border-t border-neutral-700">
+                <button @click="showConfig = false"
+                        class="px-4 py-2 text-sm text-neutral-400 hover:text-neutral-200 transition-colors">
+                    Cancel
+                </button>
+                <button @click="startTrader()"
+                        :disabled="starting"
+                        class="px-5 py-2 bg-green-600 hover:bg-green-700 disabled:bg-neutral-600 text-white text-sm font-medium rounded-lg transition-colors">
+                    <span x-show="!starting" x-text="startConfig.mode === 'sim' ? 'Start Simulation' : 'Start Trading'"></span>
+                    <span x-show="starting">Starting...</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Controls Bar -->
+    <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4 mb-4">
+        <div class="flex items-center justify-between">
+            <!-- Left: Status + Controls -->
+            <div class="flex items-center gap-4">
+                <!-- Status Indicator -->
+                <div class="flex items-center gap-2">
+                    <template x-if="snapshot.is_running">
+                        <span class="relative flex h-3 w-3">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                        </span>
+                    </template>
+                    <template x-if="!snapshot.is_running && !snapshot.error">
+                        <span class="relative flex h-3 w-3">
+                            <span class="relative inline-flex rounded-full h-3 w-3 bg-neutral-500"></span>
+                        </span>
+                    </template>
+                    <template x-if="snapshot.error">
+                        <span class="relative flex h-3 w-3">
+                            <span class="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                        </span>
+                    </template>
+                    <span class="text-sm font-medium"
+                          :class="snapshot.is_running ? 'text-green-400' : (snapshot.error ? 'text-red-400' : 'text-neutral-400')"
+                          x-text="statusLabel"></span>
+                    <!-- Mode badge -->
+                    <template x-if="snapshot.is_running && snapshot.mode === 'sim'">
+                        <span class="px-2 py-0.5 bg-blue-900 text-blue-300 text-xs rounded font-medium">SIM</span>
+                    </template>
+                    <template x-if="snapshot.is_running && snapshot.mode !== 'sim'">
+                        <span class="px-2 py-0.5 bg-green-900 text-green-300 text-xs rounded font-medium">LIVE</span>
+                    </template>
+                </div>
+
+                <!-- Session Info (when running) -->
+                <template x-if="snapshot.is_running">
+                    <div class="flex items-center gap-3 text-xs text-neutral-400">
+                        <span x-show="snapshot.mode !== 'sim'">Session: <span class="text-neutral-200" x-text="snapshot.session_id || '-'"></span></span>
+                        <span x-show="snapshot.mode === 'sim'" x-text="'Bar ' + (snapshot.sim_progress?.current_bar || 0) + ' / ' + (snapshot.sim_progress?.total_bars || 0)"></span>
+                        <span>Uptime: <span class="text-neutral-200" x-text="uptime"></span></span>
+                        <span>Last update: <span class="text-neutral-200" x-text="lastUpdateAge"></span></span>
+                    </div>
+                </template>
+
+                <!-- Error message -->
+                <template x-if="snapshot.error">
+                    <span class="text-xs text-red-400" x-text="snapshot.error"></span>
+                </template>
+            </div>
+
+            <!-- Right: Start/Stop Buttons -->
+            <div class="flex items-center gap-2">
+                <template x-if="!snapshot.is_running">
+                    <button @click="showConfig = true"
+                            class="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        Start Trading
+                    </button>
+                </template>
+                <template x-if="snapshot.is_running">
+                    <button @click="stopTrader()"
+                            :disabled="stopping"
+                            class="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-neutral-600 text-white text-sm font-medium rounded-lg transition-colors">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path>
+                        </svg>
+                        <span x-text="stopping ? 'Stopping...' : 'Stop'"></span>
+                    </button>
+                </template>
+            </div>
+        </div>
+    </div>
+
+    <!-- Candlestick Chart (full-width, above panels) -->
+    <div x-show="snapshot.is_running || _lastCandleCount > 0"
+         class="bg-neutral-900 border border-neutral-800 rounded-lg mb-4 overflow-hidden">
+        <div class="flex items-center justify-between px-4 pt-3 pb-1">
+            <h2 class="text-sm font-medium text-neutral-400">
+                <span x-text="(snapshot.config?.underlying || startConfig.underlying || 'SPY') + ' 1m'"></span>
+                <span x-show="snapshot.sim_time" class="ml-2 text-neutral-500" x-text="simTimeDisplay"></span>
+            </h2>
+            <span class="text-xs text-neutral-500" x-text="_lastCandleCount + ' candles'"></span>
+        </div>
+        <div x-ref="chartContainer" style="height: 300px;"></div>
+    </div>
+
+    <!-- Simulation Controls Bar (shown only in sim mode) -->
+    <template x-if="snapshot.is_running && snapshot.mode === 'sim'">
+        <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-3 mb-4">
+            <div class="flex items-center gap-3 mb-2">
+                <!-- Play/Pause -->
+                <button @click="togglePause()"
+                        class="flex items-center justify-center w-8 h-8 rounded-lg transition-colors"
+                        :class="snapshot.sim_paused ? 'bg-green-600 hover:bg-green-700' : 'bg-neutral-700 hover:bg-neutral-600'">
+                    <template x-if="snapshot.sim_paused">
+                        <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                    </template>
+                    <template x-if="!snapshot.sim_paused">
+                        <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                    </template>
+                </button>
+
+                <!-- Speed buttons -->
+                <div class="flex gap-1">
+                    <template x-for="s in [6, 12, 30, 60, 120]" :key="s">
+                        <button @click="setSpeed(s)"
+                                class="px-2 py-1 text-xs rounded transition-colors"
+                                :class="snapshot.sim_speed == s ? 'bg-primary-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'"
+                                x-text="s + 'x'"></button>
+                    </template>
+                </div>
+
+                <!-- Sim time display -->
+                <span class="text-sm text-neutral-300 ml-auto" x-text="simTimeDisplay || '-'"></span>
+            </div>
+
+            <!-- Progress bar / scrubber -->
+            <div class="relative h-2 bg-neutral-800 rounded-full cursor-pointer group"
+                 @mousedown="startScrub($event)"
+                 @mousemove="scrubMove($event)"
+                 @mouseup="endScrub($event)"
+                 @mouseleave="endScrub($event)"
+                 x-ref="scrubBar">
+                <!-- Fill -->
+                <div class="absolute inset-y-0 left-0 bg-primary-600 rounded-full transition-all"
+                     :style="'width: ' + simProgressPct + '%'"
+                     style="transition-duration: 0.3s;"></div>
+                <!-- Thumb -->
+                <div class="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity"
+                     :style="'left: calc(' + simProgressPct + '% - 6px)'"></div>
+            </div>
+            <div class="flex justify-between text-xs text-neutral-600 mt-1">
+                <span x-text="'Bar ' + (snapshot.sim_progress?.current_bar || 0)"></span>
+                <span x-text="(snapshot.sim_progress?.total_bars || 0) + ' total'"></span>
+            </div>
+        </div>
+    </template>
+
+    <!-- Two-column grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Left Column -->
+        <div class="space-y-6">
+            <!-- Signal Panel -->
+            <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
+                <h2 class="text-sm font-medium text-neutral-400 mb-3">Current Signal</h2>
+                <template x-if="snapshot.signal">
+                    <div>
+                        <div class="flex items-center gap-3 mb-3">
+                            <span class="text-2xl font-bold"
+                                  :class="{
+                                      'text-neutral-400': snapshot.signal.action === 'HOLD' || snapshot.signal.action === 'hold',
+                                      'text-green-400': snapshot.signal.action === 'LONG' || snapshot.signal.action === 'long',
+                                      'text-red-400': snapshot.signal.action === 'SHORT' || snapshot.signal.action === 'short'
+                                  }"
+                                  x-text="(snapshot.signal.action || 'HOLD').toUpperCase()"></span>
+                            <span class="text-xs text-neutral-500" x-show="snapshot.signal.source && snapshot.signal.source !== 'none'"
+                                  x-text="'via ' + snapshot.signal.source"></span>
+                        </div>
+
+                        <!-- Confidence bar -->
+                        <div class="mb-3">
+                            <div class="flex justify-between text-xs text-neutral-500 mb-1">
+                                <span>Confidence</span>
+                                <span x-text="((snapshot.signal.confidence || 0) * 100).toFixed(0) + '%'"></span>
+                            </div>
+                            <div class="w-full bg-neutral-800 rounded-full h-2">
+                                <div class="h-2 rounded-full transition-all duration-500"
+                                     :class="{
+                                         'bg-neutral-600': snapshot.signal.action === 'HOLD' || snapshot.signal.action === 'hold',
+                                         'bg-green-500': snapshot.signal.action === 'LONG' || snapshot.signal.action === 'long',
+                                         'bg-red-500': snapshot.signal.action === 'SHORT' || snapshot.signal.action === 'short'
+                                     }"
+                                     :style="'width: ' + ((snapshot.signal.confidence || 0) * 100) + '%'"></div>
+                            </div>
+                        </div>
+
+                        <!-- Agreeing models -->
+                        <div x-show="snapshot.signal.agreeing_models && snapshot.signal.agreeing_models.length > 0">
+                            <span class="text-xs text-neutral-500">Agreeing models:</span>
+                            <div class="flex flex-wrap gap-1 mt-1">
+                                <template x-for="model in (snapshot.signal.agreeing_models || [])" :key="model">
+                                    <span class="px-2 py-0.5 bg-neutral-800 text-neutral-300 text-xs rounded" x-text="model"></span>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+                <template x-if="!snapshot.signal">
+                    <p class="text-neutral-500 text-sm">No signal data</p>
+                </template>
+            </div>
+
+            <!-- Position Panel -->
+            <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
+                <h2 class="text-sm font-medium text-neutral-400 mb-3">Position</h2>
+                <template x-if="snapshot.position">
+                    <div class="space-y-3">
+                        <div class="flex items-center gap-2">
+                            <span class="px-2 py-0.5 text-xs font-bold rounded"
+                                  :class="snapshot.position.position_type === 'call' ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'"
+                                  x-text="(snapshot.position.position_type || '').toUpperCase()"></span>
+                            <span class="text-sm text-neutral-300" x-text="snapshot.position.option_symbol"></span>
+                            <template x-if="snapshot.position.is_runner">
+                                <span class="px-2 py-0.5 bg-yellow-900 text-yellow-300 text-xs rounded">RUNNER</span>
+                            </template>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-3 text-sm">
+                            <div>
+                                <span class="text-neutral-500">Strike</span>
+                                <p class="text-neutral-200" x-text="'$' + (snapshot.position.strike || 0).toFixed(0)"></p>
+                            </div>
+                            <div>
+                                <span class="text-neutral-500">Contracts</span>
+                                <p class="text-neutral-200" x-text="snapshot.position.num_contracts"></p>
+                            </div>
+                            <div>
+                                <span class="text-neutral-500">Entry Price</span>
+                                <p class="text-neutral-200" x-text="'$' + (snapshot.position.entry_option_price || 0).toFixed(2)"></p>
+                            </div>
+                            <div>
+                                <span class="text-neutral-500">Hold Time</span>
+                                <p class="text-neutral-200" x-text="(snapshot.position.hold_minutes || 0) + ' min'"></p>
+                            </div>
+                            <div>
+                                <span class="text-neutral-500">Peak P&L</span>
+                                <p :class="(snapshot.position.peak_pnl_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'"
+                                   x-text="(snapshot.position.peak_pnl_pct || 0).toFixed(1) + '%'"></p>
+                            </div>
+                            <div>
+                                <span class="text-neutral-500">Model</span>
+                                <p class="text-neutral-200" x-text="snapshot.position.dominant_model || '-'"></p>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center gap-2 text-xs">
+                            <template x-if="snapshot.position.breakeven_activated">
+                                <span class="px-2 py-0.5 bg-blue-900 text-blue-300 rounded">BE Active</span>
+                            </template>
+                            <template x-if="snapshot.position.is_double_breakout">
+                                <span class="px-2 py-0.5 bg-pink-900 text-pink-300 rounded">Double Breakout</span>
+                            </template>
+                            <template x-if="snapshot.position.is_breach && !snapshot.position.is_double_breakout">
+                                <span class="px-2 py-0.5 bg-purple-900 text-purple-300 rounded">Breach</span>
+                            </template>
+                            <template x-if="snapshot.position.is_reversal">
+                                <span class="px-2 py-0.5 bg-amber-900 text-amber-300 rounded">Reversal</span>
+                            </template>
+                            <template x-if="snapshot.position.is_bounce">
+                                <span class="px-2 py-0.5 bg-green-900 text-green-300 rounded">Bounce</span>
+                            </template>
+                            <template x-if="snapshot.position.is_news_event">
+                                <span class="px-2 py-0.5 bg-yellow-900 text-yellow-300 rounded">News Event</span>
+                            </template>
+                            <template x-if="snapshot.position.renewals > 0">
+                                <span class="px-2 py-0.5 bg-neutral-800 text-neutral-300 rounded"
+                                      x-text="'Renewed x' + snapshot.position.renewals"></span>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+                <template x-if="!snapshot.position">
+                    <p class="text-neutral-500 text-sm">No active position</p>
+                </template>
+            </div>
+
+            <!-- Session Stats -->
+            <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
+                <h2 class="text-sm font-medium text-neutral-400 mb-3">Session Stats</h2>
+                <template x-if="snapshot.stats">
+                    <div class="grid grid-cols-2 gap-3 text-sm">
+                        <div>
+                            <span class="text-neutral-500">Breach Immediate</span>
+                            <p class="text-neutral-200" x-text="snapshot.stats.breach_immediate_entries || 0"></p>
+                        </div>
+                        <div>
+                            <span class="text-neutral-500">Breach Continuation</span>
+                            <p class="text-neutral-200" x-text="snapshot.stats.breach_continuation_entries || 0"></p>
+                        </div>
+                        <div>
+                            <span class="text-neutral-500">Direction Rejections</span>
+                            <p class="text-neutral-200" x-text="snapshot.stats.vwap_direction_rejections || 0"></p>
+                        </div>
+                        <div>
+                            <span class="text-neutral-500">Timeframe Rejections</span>
+                            <p class="text-neutral-200" x-text="snapshot.stats.timeframe_rejections || 0"></p>
+                        </div>
+                        <div>
+                            <span class="text-neutral-500">Bars in Buffer</span>
+                            <p class="text-neutral-200" x-text="snapshot.stats.bars_in_buffer || 0"></p>
+                        </div>
+                        <div>
+                            <span class="text-neutral-500">Minutes Elapsed</span>
+                            <p class="text-neutral-200" x-text="snapshot.minutes_elapsed || 0"></p>
+                        </div>
+                    </div>
+                </template>
+                <template x-if="!snapshot.stats">
+                    <p class="text-neutral-500 text-sm">No stats available</p>
+                </template>
+            </div>
+        </div>
+
+        <!-- Right Column -->
+        <div class="space-y-6">
+            <!-- Market Context -->
+            <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
+                <h2 class="text-sm font-medium text-neutral-400 mb-3">Market Context</h2>
+                <template x-if="snapshot.current_price">
+                    <div class="space-y-4">
+                        <!-- SPY Price -->
+                        <div>
+                            <span class="text-3xl font-bold text-neutral-100"
+                                  x-text="'$' + (snapshot.current_price || 0).toFixed(2)"></span>
+                            <span class="text-sm text-neutral-500 ml-2" x-text="snapshot.config?.underlying || 'SPY'"></span>
+                            <span class="text-xs ml-2"
+                                  :class="snapshot.is_market_hours ? 'text-green-400' : 'text-neutral-500'"
+                                  x-text="snapshot.is_market_hours ? 'Market Open' : 'Market Closed'"></span>
+                        </div>
+
+                        <!-- VWAP with Bands -->
+                        <div x-show="snapshot.vwap">
+                            <div class="flex justify-between text-xs text-neutral-500 mb-1">
+                                <span>VWAP Bands</span>
+                                <span x-text="'VWAP: $' + (snapshot.vwap || 0).toFixed(2)"></span>
+                            </div>
+                            <!-- Visual bar showing price position relative to bands -->
+                            <div class="relative w-full h-6 bg-neutral-800 rounded overflow-hidden">
+                                <!-- 2SD bands (full width) -->
+                                <div class="absolute inset-y-0 bg-neutral-750 rounded"
+                                     :style="'left: 10%; right: 10%;'"></div>
+                                <!-- 1SD bands -->
+                                <div class="absolute inset-y-0 bg-neutral-700 rounded"
+                                     :style="'left: 25%; right: 25%;'"></div>
+                                <!-- VWAP line -->
+                                <div class="absolute inset-y-0 w-px bg-blue-500" style="left: 50%;"></div>
+                                <!-- Price position -->
+                                <div class="absolute inset-y-0 w-1.5 bg-white rounded"
+                                     :style="'left: ' + getPricePosition() + '%'"></div>
+                            </div>
+                            <div class="flex justify-between text-xs text-neutral-600 mt-1">
+                                <span x-text="'-2SD: $' + (snapshot.vwap_lower_2sd || 0).toFixed(2)"></span>
+                                <span x-text="'+2SD: $' + (snapshot.vwap_upper_2sd || 0).toFixed(2)"></span>
+                            </div>
+                        </div>
+
+                        <!-- Opening Range -->
+                        <div x-show="snapshot.or_high" class="grid grid-cols-2 gap-3 text-sm">
+                            <div>
+                                <span class="text-neutral-500">OR High</span>
+                                <p class="text-neutral-200" x-text="'$' + (snapshot.or_high || 0).toFixed(2)"></p>
+                            </div>
+                            <div>
+                                <span class="text-neutral-500">OR Low</span>
+                                <p class="text-neutral-200" x-text="'$' + (snapshot.or_low || 0).toFixed(2)"></p>
+                            </div>
+                        </div>
+
+                        <!-- Latest Bar -->
+                        <div x-show="snapshot.latest_bar" class="text-xs text-neutral-500">
+                            <span>Latest bar: </span>
+                            <span x-text="'O:' + (snapshot.latest_bar?.open || 0).toFixed(2)"></span>
+                            <span x-text="' H:' + (snapshot.latest_bar?.high || 0).toFixed(2)"></span>
+                            <span x-text="' L:' + (snapshot.latest_bar?.low || 0).toFixed(2)"></span>
+                            <span x-text="' C:' + (snapshot.latest_bar?.close || 0).toFixed(2)"></span>
+                            <span x-text="' V:' + ((snapshot.latest_bar?.volume || 0) / 1000).toFixed(0) + 'K'"></span>
+                        </div>
+                    </div>
+                </template>
+                <template x-if="!snapshot.current_price">
+                    <p class="text-neutral-500 text-sm">No market data</p>
+                </template>
+            </div>
+
+            <!-- Daily Summary -->
+            <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
+                <h2 class="text-sm font-medium text-neutral-400 mb-3">Daily Summary</h2>
+                <div class="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                        <span class="text-neutral-500">Capital</span>
+                        <p class="text-neutral-200" x-text="'$' + (trades.capital || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})"></p>
+                    </div>
+                    <div>
+                        <span class="text-neutral-500">Daily P&L</span>
+                        <p :class="(trades.daily_pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'"
+                           x-text="(trades.daily_pnl >= 0 ? '+$' : '-$') + Math.abs(trades.daily_pnl || 0).toFixed(2)"></p>
+                    </div>
+                    <div>
+                        <span class="text-neutral-500">Trades Today</span>
+                        <p class="text-neutral-200" x-text="trades.daily_trades || 0"></p>
+                    </div>
+                    <div>
+                        <span class="text-neutral-500">Win Rate</span>
+                        <p class="text-neutral-200" x-text="(trades.win_rate || 0).toFixed(0) + '%'"></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Trade Log -->
+            <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
+                <h2 class="text-sm font-medium text-neutral-400 mb-3">Trade Log</h2>
+                <template x-if="trades.trades && trades.trades.length > 0">
+                    <div class="max-h-64 overflow-y-auto">
+                        <table class="w-full text-xs">
+                            <thead class="text-neutral-500 sticky top-0 bg-neutral-900">
+                                <tr>
+                                    <th class="text-left py-1 pr-2">Time</th>
+                                    <th class="text-left py-1 pr-2">Symbol</th>
+                                    <th class="text-right py-1 pr-2">P&L %</th>
+                                    <th class="text-right py-1 pr-2">P&L $</th>
+                                    <th class="text-left py-1">Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="(trade, idx) in (trades.trades || []).slice().reverse()" :key="idx">
+                                    <tr class="border-t border-neutral-800">
+                                        <td class="py-1.5 pr-2 text-neutral-400" x-text="formatTradeTime(trade.exit_time)"></td>
+                                        <td class="py-1.5 pr-2 text-neutral-300" x-text="trade.option_symbol || '-'"></td>
+                                        <td class="py-1.5 pr-2 text-right"
+                                            :class="(trade.pnl_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'"
+                                            x-text="(trade.pnl_pct || 0).toFixed(1) + '%'"></td>
+                                        <td class="py-1.5 pr-2 text-right"
+                                            :class="(trade.pnl_dollars || 0) >= 0 ? 'text-green-400' : 'text-red-400'"
+                                            x-text="(trade.pnl_dollars >= 0 ? '+$' : '-$') + Math.abs(trade.pnl_dollars || 0).toFixed(2)"></td>
+                                        <td class="py-1.5 text-neutral-500" x-text="trade.exit_reason || '-'"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </template>
+                <template x-if="!trades.trades || trades.trades.length === 0">
+                    <p class="text-neutral-500 text-sm">No trades yet</p>
+                </template>
+            </div>
+
+            <!-- Pending State -->
+            <div x-show="snapshot.pending && (snapshot.pending.has_pending_entry || snapshot.pending.has_pending_breach)"
+                 class="bg-neutral-900 border border-yellow-900 rounded-lg p-4">
+                <h2 class="text-sm font-medium text-yellow-400 mb-3">Pending</h2>
+                <div class="space-y-2 text-sm">
+                    <template x-if="snapshot.pending?.has_pending_entry">
+                        <div class="flex items-center gap-2">
+                            <span class="px-2 py-0.5 text-xs font-bold rounded"
+                                  :class="snapshot.pending.pending_entry?.position_type === 'call' ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'"
+                                  x-text="(snapshot.pending.pending_entry?.position_type || '').toUpperCase()"></span>
+                            <span class="text-neutral-300">Pending entry</span>
+                            <span class="text-neutral-500" x-text="'via ' + (snapshot.pending.pending_entry?.dominant_model || '-')"></span>
+                        </div>
+                    </template>
+                    <template x-if="snapshot.pending?.has_pending_breach">
+                        <div class="flex items-center gap-2">
+                            <span class="px-2 py-0.5 bg-purple-900 text-purple-300 text-xs rounded">Breach</span>
+                            <span class="text-neutral-300">Pending confirmation</span>
+                            <span class="text-neutral-500" x-text="snapshot.pending.pending_breach_type || ''"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function liveApp() {
+    return {
+        snapshot: {},
+        trades: { trades: [], daily_trades: 0, daily_pnl: 0, capital: 25000, win_rate: 0 },
+        pollInterval: null,
+        showConfig: false,
+        starting: false,
+        stopping: false,
+        startConfig: {
+            underlying: 'SPY',
+            mode: 'sim',
+            start_date: '2025-01-02',
+            end_date: '2025-01-02',
+            speed: 30,
+            capital: 25000,
+            session_id: 'paper_trading',
+            use_heuristic: true,
+            dry_run: false,
+        },
+
+        // Chart state
+        chart: null,
+        candleSeries: null,
+        _lastCandleCount: 0,
+        _scrubbing: false,
+
+        init() {
+            this.poll();
+            this.pollInterval = setInterval(() => this.poll(), 2000);
+        },
+
+        initChart() {
+            if (this.chart) return;
+            const container = this.$refs.chartContainer;
+            if (!container) return;
+
+            this.chart = LightweightCharts.createChart(container, {
+                layout: {
+                    background: { color: '#171717' },
+                    textColor: '#a3a3a3',
+                },
+                grid: {
+                    vertLines: { color: '#262626' },
+                    horzLines: { color: '#262626' },
+                },
+                timeScale: {
+                    timeVisible: true,
+                    secondsVisible: false,
+                    borderColor: '#404040',
+                },
+                rightPriceScale: {
+                    borderColor: '#404040',
+                },
+                crosshair: {
+                    mode: LightweightCharts.CrosshairMode.Normal,
+                },
+            });
+
+            this.candleSeries = this.chart.addCandlestickSeries({
+                upColor: '#22c55e',
+                downColor: '#ef4444',
+                borderDownColor: '#ef4444',
+                borderUpColor: '#22c55e',
+                wickDownColor: '#ef4444',
+                wickUpColor: '#22c55e',
+            });
+
+            // Handle resize
+            const resizeObserver = new ResizeObserver(() => {
+                if (this.chart && container.clientWidth > 0) {
+                    this.chart.applyOptions({ width: container.clientWidth });
+                }
+            });
+            resizeObserver.observe(container);
+        },
+
+        updateChart(candles) {
+            if (!candles || candles.length === 0) return;
+
+            // Init chart on first data
+            if (!this.chart) {
+                this.initChart();
+                if (!this.chart) return;
+            }
+
+            if (this._lastCandleCount === 0 || candles.length < this._lastCandleCount) {
+                // Full reset (first load or backward seek)
+                this.candleSeries.setData(candles);
+            } else if (candles.length > this._lastCandleCount) {
+                // Incremental: update last known + add new ones
+                const startIdx = Math.max(0, this._lastCandleCount - 1);
+                for (let i = startIdx; i < candles.length; i++) {
+                    this.candleSeries.update(candles[i]);
+                }
+            } else if (candles.length === this._lastCandleCount && candles.length > 0) {
+                // Same count, update last candle (may have changed)
+                this.candleSeries.update(candles[candles.length - 1]);
+            }
+            this._lastCandleCount = candles.length;
+        },
+
+        async poll() {
+            try {
+                const [snapResp, tradesResp, candlesResp] = await Promise.all([
+                    fetch('/api/live/snapshot'),
+                    fetch('/api/live/trades'),
+                    fetch('/api/live/candles'),
+                ]);
+                this.snapshot = await snapResp.json();
+                this.trades = await tradesResp.json();
+                const candleData = await candlesResp.json();
+                if (candleData.candles && candleData.candles.length > 0) {
+                    this.updateChart(candleData.candles);
+                }
+            } catch (e) {
+                console.error('Poll error:', e);
+            }
+        },
+
+        async startTrader() {
+            this.starting = true;
+            try {
+                const resp = await fetch('/api/live/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.startConfig),
+                });
+                const data = await resp.json();
+                if (!data.ok) {
+                    alert('Failed to start: ' + (data.error || 'Unknown error'));
+                }
+                this.showConfig = false;
+                // Reset chart for new session
+                if (this.chart && this.candleSeries) {
+                    this.candleSeries.setData([]);
+                }
+                this._lastCandleCount = 0;
+                await this.poll();
+            } catch (e) {
+                alert('Error starting trader: ' + e.message);
+            } finally {
+                this.starting = false;
+            }
+        },
+
+        async stopTrader() {
+            if (!confirm('Stop the trader?')) return;
+            this.stopping = true;
+            try {
+                await fetch('/api/live/stop', { method: 'POST' });
+                await new Promise(r => setTimeout(r, 500));
+                await this.poll();
+            } catch (e) {
+                alert('Error stopping trader: ' + e.message);
+            } finally {
+                this.stopping = false;
+            }
+        },
+
+        // Simulation controls
+        async togglePause() {
+            const newPaused = !this.snapshot.sim_paused;
+            await fetch('/api/live/pause', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ paused: newPaused }),
+            });
+            this.snapshot.sim_paused = newPaused;
+        },
+
+        async setSpeed(s) {
+            await fetch('/api/live/speed', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ speed: s }),
+            });
+            this.snapshot.sim_speed = s;
+        },
+
+        startScrub(e) {
+            this._scrubbing = true;
+            this.scrubTo(e);
+        },
+
+        scrubMove(e) {
+            if (!this._scrubbing) return;
+            this.scrubTo(e);
+        },
+
+        endScrub(e) {
+            this._scrubbing = false;
+        },
+
+        async scrubTo(e) {
+            const bar = this.$refs.scrubBar;
+            if (!bar || !this.snapshot.sim_progress) return;
+            const rect = bar.getBoundingClientRect();
+            const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+            const targetBar = Math.round(pct * (this.snapshot.sim_progress.total_bars - 1));
+            await fetch('/api/live/seek', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ bar_index: targetBar }),
+            });
+        },
+
+        get statusLabel() {
+            if (this.snapshot.is_running) {
+                return this.snapshot.mode === 'sim' ? 'SIMULATING' : 'RUNNING';
+            }
+            if (this.snapshot.error) return 'ERROR';
+            return 'STOPPED';
+        },
+
+        get simProgressPct() {
+            return this.snapshot.sim_progress?.pct || 0;
+        },
+
+        get simTimeDisplay() {
+            if (!this.snapshot.sim_time) return '';
+            try {
+                const d = new Date(this.snapshot.sim_time);
+                return d.toLocaleString('en-US', {
+                    month: 'short', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit', hour12: false
+                });
+            } catch {
+                return this.snapshot.sim_time;
+            }
+        },
+
+        get uptime() {
+            if (!this.snapshot.started_at) return '-';
+            const started = new Date(this.snapshot.started_at);
+            const now = new Date();
+            const diffMs = now - started;
+            const hours = Math.floor(diffMs / 3600000);
+            const mins = Math.floor((diffMs % 3600000) / 60000);
+            if (hours > 0) return hours + 'h ' + mins + 'm';
+            return mins + 'm';
+        },
+
+        get lastUpdateAge() {
+            if (!this.snapshot.timestamp) return '-';
+            const ts = new Date(this.snapshot.timestamp);
+            const now = new Date();
+            const diffSec = Math.floor((now - ts) / 1000);
+            if (diffSec < 5) return 'just now';
+            return diffSec + 's ago';
+        },
+
+        getPricePosition() {
+            if (!this.snapshot.vwap || !this.snapshot.current_price ||
+                !this.snapshot.vwap_lower_2sd || !this.snapshot.vwap_upper_2sd) return 50;
+            const range = this.snapshot.vwap_upper_2sd - this.snapshot.vwap_lower_2sd;
+            if (range <= 0) return 50;
+            const pct = (this.snapshot.current_price - this.snapshot.vwap_lower_2sd) / range;
+            return Math.max(2, Math.min(98, pct * 100));
+        },
+
+        formatTradeTime(isoStr) {
+            if (!isoStr) return '-';
+            try {
+                const d = new Date(isoStr);
+                return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+            } catch {
+                return isoStr;
+            }
+        },
+
+        destroy() {
+            if (this.pollInterval) {
+                clearInterval(this.pollInterval);
+            }
+            if (this.chart) {
+                this.chart.remove();
+                this.chart = null;
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

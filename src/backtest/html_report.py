@@ -230,7 +230,8 @@ class TradeMarker:
     num_contracts: int = 10  # Number of contracts
     is_runner: bool = False  # True if this is a runner continuation
     parent_entry_time: int = 0  # Original entry time for runners (for matching entry markers)
-    dominant_model: str = ""  # Signal type: "vwap", "orb", "1m", "5m", "15m"
+    dominant_model: str = ""  # Signal type: "breach", "1m", "5m", "15m"
+    quality: str = ""  # Trade quality grade: A, B, C, D
 
 
 def generate_html_report(
@@ -377,10 +378,12 @@ def generate_html_report(
         contract_color = "#26a69a" if t.is_long else "#ef5350"  # Green for long, red for short
 
         # Derive entry reason from dominant_model
-        if t.dominant_model == "vwap":
+        if t.dominant_model == "breach":
             entry_reason = "Breakout"
-        elif t.dominant_model == "orb":
-            entry_reason = "Breakout"
+        elif t.dominant_model == "bounce":
+            entry_reason = "Bounce"
+        elif t.dominant_model == "news_event":
+            entry_reason = "News Event"
         elif t.dominant_model in ("1m", "5m", "15m"):
             entry_reason = "Continuation"
         elif t.dominant_model:
@@ -400,6 +403,7 @@ def generate_html_report(
                 <td class="pnl">{t.pnl_pct:+.2f}%</td>
                 <td class="pnl">${t.pnl_dollars:+,.2f}</td>
                 <td>${t.capital_after:,.0f}</td>
+                <td style="font-weight: bold; color: {'#26a69a' if t.quality == 'A' else '#66bb6a' if t.quality == 'B' else '#ffa726' if t.quality == 'C' else '#ef5350' if t.quality == 'D' else '#888'};">{t.quality}</td>
                 <td>{entry_reason}</td>
                 <td>{t.exit_reason}</td>
             </tr>
@@ -462,8 +466,8 @@ def generate_html_report(
 
     # Build signal statistics HTML
     signal_stats_rows = ""
-    signal_display_names = {"1m": "C1", "5m": "C5", "15m": "C15", "vwap": "B"}
-    for model in ["1m", "5m", "15m", "vwap"]:
+    signal_display_names = {"1m": "C1", "5m": "C5", "15m": "C15", "breach": "B", "bounce": "V", "news_event": "NE"}
+    for model in ["1m", "5m", "15m", "breach", "bounce", "news_event"]:
         if model in signal_stats:
             s = signal_stats[model]
             display_name = signal_display_names.get(model, model.upper())
@@ -776,10 +780,6 @@ def generate_html_report(
         win_rate_d = d["wins"] / d["trades"] * 100 if d["trades"] > 0 else 0
         avg_pnl = sum(d["avg_pnl_pct"]) / len(d["avg_pnl_pct"]) if d["avg_pnl_pct"] else 0
         pnl_class = "positive" if d["pnl"] >= 0 else "negative"
-        best_pnl = d["best_pnl"] if d["best_pnl"] is not None else 0
-        worst_pnl = d["worst_pnl"] if d["worst_pnl"] is not None else 0
-        best_class = "positive" if best_pnl >= 0 else "negative"
-        worst_class = "positive" if worst_pnl >= 0 else "negative"
         label, desc = direction_labels[cat]
         # ATM/OTM rows are indented under their parent
         is_sub_row = cat in ["long_atm", "long_otm", "short_atm", "short_otm"]
@@ -792,8 +792,6 @@ def generate_html_report(
                 <td>{d['wins']}</td>
                 <td>{win_rate_d:.1f}%</td>
                 <td>{avg_pnl:+.2f}%</td>
-                <td class="{best_class}">{best_pnl:+.1f}%</td>
-                <td class="{worst_class}">{worst_pnl:+.1f}%</td>
                 <td class="{pnl_class}">${d['pnl']:+,.0f}</td>
             </tr>
         """
@@ -839,10 +837,6 @@ def generate_html_report(
         win_rate_t = ts["wins"] / ts["trades"] * 100 if ts["trades"] > 0 else 0
         avg_pnl = sum(ts["avg_pnl_pct"]) / len(ts["avg_pnl_pct"]) if ts["avg_pnl_pct"] else 0
         pnl_class = "positive" if ts["pnl"] >= 0 else "negative"
-        best_pnl = ts["best_pnl"] if ts["best_pnl"] is not None else 0
-        worst_pnl = ts["worst_pnl"] if ts["worst_pnl"] is not None else 0
-        best_class = "positive" if best_pnl >= 0 else "negative"
-        worst_class = "positive" if worst_pnl >= 0 else "negative"
         time_rows += f"""
             <tr>
                 <td><strong>{interval_name}</strong></td>
@@ -850,8 +844,6 @@ def generate_html_report(
                 <td>{ts['wins']}</td>
                 <td>{win_rate_t:.1f}%</td>
                 <td>{avg_pnl:+.2f}%</td>
-                <td class="{best_class}">{best_pnl:+.1f}%</td>
-                <td class="{worst_class}">{worst_pnl:+.1f}%</td>
                 <td class="{pnl_class}">${ts['pnl']:+,.0f}</td>
             </tr>
         """
@@ -883,10 +875,6 @@ def generate_html_report(
         win_rate_d = ds["wins"] / ds["trades"] * 100 if ds["trades"] > 0 else 0
         avg_pnl = sum(ds["avg_pnl_pct"]) / len(ds["avg_pnl_pct"]) if ds["avg_pnl_pct"] else 0
         pnl_class = "positive" if ds["pnl"] >= 0 else "negative"
-        best_pnl = ds["best_pnl"] if ds["best_pnl"] is not None else 0
-        worst_pnl = ds["worst_pnl"] if ds["worst_pnl"] is not None else 0
-        best_class = "positive" if best_pnl >= 0 else "negative"
-        worst_class = "positive" if worst_pnl >= 0 else "negative"
         dow_rows += f"""
             <tr>
                 <td><strong>{day_name}</strong></td>
@@ -894,15 +882,13 @@ def generate_html_report(
                 <td>{ds['wins']}</td>
                 <td>{win_rate_d:.1f}%</td>
                 <td>{avg_pnl:+.2f}%</td>
-                <td class="{best_class}">{best_pnl:+.1f}%</td>
-                <td class="{worst_class}">{worst_pnl:+.1f}%</td>
                 <td class="{pnl_class}">${ds['pnl']:+,.0f}</td>
             </tr>
         """
 
     # Calculate strategy stats with long/short breakdown
-    # Strategies: VWAP, OR (Opening Range), JEPA
-    strategies = ["vwap", "orb", "jepa"]
+    # Strategies: Breach, JEPA
+    strategies = ["breach", "bounce", "news_event", "jepa"]
     strategy_stats = {
         strat: {
             "total": {"trades": 0, "wins": 0, "pnl": 0.0, "avg_pnl_pct": [], "best_pnl": None, "worst_pnl": None},
@@ -914,10 +900,12 @@ def generate_html_report(
 
     for t in trades:
         # Determine strategy based on dominant_model
-        if t.dominant_model == "vwap":
-            strategy = "vwap"
-        elif t.dominant_model == "orb":
-            strategy = "orb"
+        if t.dominant_model == "breach":
+            strategy = "breach"
+        elif t.dominant_model == "bounce":
+            strategy = "bounce"
+        elif t.dominant_model == "news_event":
+            strategy = "news_event"
         elif t.dominant_model in ("1m", "5m", "15m"):
             strategy = "jepa"
         else:
@@ -949,8 +937,9 @@ def generate_html_report(
 
     # Build strategy rows with long/short breakdown
     strategy_labels = {
-        "vwap": ("(B)reakout", ""),
-        "orb": ("Opening Range", "First 15-minute range breakout signals"),
+        "breach": ("(B)reakout", ""),
+        "bounce": ("(V)WAP Bounce", "Mean reversion at VWAP support/resistance"),
+        "news_event": ("(N)ews (E)vent", "High-volume continuation after opening range"),
         "jepa": ("(C)ontinuation", ""),
     }
 
@@ -965,10 +954,6 @@ def generate_html_report(
         win_rate = total["wins"] / total["trades"] * 100 if total["trades"] > 0 else 0
         avg_pnl = sum(total["avg_pnl_pct"]) / len(total["avg_pnl_pct"]) if total["avg_pnl_pct"] else 0
         pnl_class = "positive" if total["pnl"] >= 0 else "negative"
-        best_pnl = total["best_pnl"] if total["best_pnl"] is not None else 0
-        worst_pnl = total["worst_pnl"] if total["worst_pnl"] is not None else 0
-        best_class = "positive" if best_pnl >= 0 else "negative"
-        worst_class = "positive" if worst_pnl >= 0 else "negative"
 
         # Strategy header row
         strategy_rows += f"""
@@ -978,8 +963,6 @@ def generate_html_report(
                 <td><strong>{total['wins']}</strong></td>
                 <td><strong>{win_rate:.1f}%</strong></td>
                 <td><strong>{avg_pnl:+.2f}%</strong></td>
-                <td class="{best_class}"><strong>{best_pnl:+.1f}%</strong></td>
-                <td class="{worst_class}"><strong>{worst_pnl:+.1f}%</strong></td>
                 <td class="{pnl_class}"><strong>${total['pnl']:+,.0f}</strong></td>
             </tr>
         """
@@ -990,10 +973,6 @@ def generate_html_report(
             long_wr = long_stats["wins"] / long_stats["trades"] * 100
             long_avg = sum(long_stats["avg_pnl_pct"]) / len(long_stats["avg_pnl_pct"]) if long_stats["avg_pnl_pct"] else 0
             long_pnl_class = "positive" if long_stats["pnl"] >= 0 else "negative"
-            long_best = long_stats["best_pnl"] if long_stats["best_pnl"] is not None else 0
-            long_worst = long_stats["worst_pnl"] if long_stats["worst_pnl"] is not None else 0
-            long_best_class = "positive" if long_best >= 0 else "negative"
-            long_worst_class = "positive" if long_worst >= 0 else "negative"
             strategy_rows += f"""
             <tr style="background: #0d1f0d;">
                 <td style="padding-left: 24px; color: #26a69a;">&#x25B2; Long</td>
@@ -1001,8 +980,6 @@ def generate_html_report(
                 <td>{long_stats['wins']}</td>
                 <td>{long_wr:.1f}%</td>
                 <td>{long_avg:+.2f}%</td>
-                <td class="{long_best_class}">{long_best:+.1f}%</td>
-                <td class="{long_worst_class}">{long_worst:+.1f}%</td>
                 <td class="{long_pnl_class}">${long_stats['pnl']:+,.0f}</td>
             </tr>
             """
@@ -1013,10 +990,6 @@ def generate_html_report(
             short_wr = short_stats["wins"] / short_stats["trades"] * 100
             short_avg = sum(short_stats["avg_pnl_pct"]) / len(short_stats["avg_pnl_pct"]) if short_stats["avg_pnl_pct"] else 0
             short_pnl_class = "positive" if short_stats["pnl"] >= 0 else "negative"
-            short_best = short_stats["best_pnl"] if short_stats["best_pnl"] is not None else 0
-            short_worst = short_stats["worst_pnl"] if short_stats["worst_pnl"] is not None else 0
-            short_best_class = "positive" if short_best >= 0 else "negative"
-            short_worst_class = "positive" if short_worst >= 0 else "negative"
             strategy_rows += f"""
             <tr style="background: #1f0d0d;">
                 <td style="padding-left: 24px; color: #ef5350;">&#x25BC; Short</td>
@@ -1024,8 +997,88 @@ def generate_html_report(
                 <td>{short_stats['wins']}</td>
                 <td>{short_wr:.1f}%</td>
                 <td>{short_avg:+.2f}%</td>
-                <td class="{short_best_class}">{short_best:+.1f}%</td>
-                <td class="{short_worst_class}">{short_worst:+.1f}%</td>
+                <td class="{short_pnl_class}">${short_stats['pnl']:+,.0f}</td>
+            </tr>
+            """
+
+    # Calculate quality stats with long/short breakdown
+    quality_grades = ["A", "B", "C", "D"]
+    quality_labels = {
+        "A": ("A — 5%", "#26a69a"),
+        "B": ("B — 4%", "#66bb6a"),
+        "C": ("C — 3%", "#ffa726"),
+        "D": ("D — 2%", "#ef5350"),
+    }
+    quality_stats = {
+        grade: {
+            "total": {"trades": 0, "wins": 0, "pnl": 0.0, "avg_pnl_pct": []},
+            "long": {"trades": 0, "wins": 0, "pnl": 0.0, "avg_pnl_pct": []},
+            "short": {"trades": 0, "wins": 0, "pnl": 0.0, "avg_pnl_pct": []},
+        }
+        for grade in quality_grades
+    }
+
+    for t in trades:
+        grade = t.quality if t.quality in quality_grades else "D"
+        direction = "long" if t.is_long else "short"
+        for bucket in ("total", direction):
+            quality_stats[grade][bucket]["trades"] += 1
+            quality_stats[grade][bucket]["pnl"] += t.pnl_dollars
+            quality_stats[grade][bucket]["avg_pnl_pct"].append(t.pnl_pct)
+            if t.is_win:
+                quality_stats[grade][bucket]["wins"] += 1
+
+    quality_rows = ""
+    for grade in quality_grades:
+        stats = quality_stats[grade]
+        if stats["total"]["trades"] == 0:
+            continue
+
+        label, color = quality_labels[grade]
+        total = stats["total"]
+        win_rate = total["wins"] / total["trades"] * 100 if total["trades"] > 0 else 0
+        avg_pnl = sum(total["avg_pnl_pct"]) / len(total["avg_pnl_pct"]) if total["avg_pnl_pct"] else 0
+        pnl_class = "positive" if total["pnl"] >= 0 else "negative"
+
+        quality_rows += f"""
+            <tr style="background: #1a1a1a;">
+                <td><strong style="color: {color};">{label}</strong></td>
+                <td><strong>{total['trades']}</strong></td>
+                <td><strong>{total['wins']}</strong></td>
+                <td><strong>{win_rate:.1f}%</strong></td>
+                <td><strong>{avg_pnl:+.2f}%</strong></td>
+                <td class="{pnl_class}"><strong>${total['pnl']:+,.0f}</strong></td>
+            </tr>
+        """
+
+        long_stats = stats["long"]
+        if long_stats["trades"] > 0:
+            long_wr = long_stats["wins"] / long_stats["trades"] * 100
+            long_avg = sum(long_stats["avg_pnl_pct"]) / len(long_stats["avg_pnl_pct"]) if long_stats["avg_pnl_pct"] else 0
+            long_pnl_class = "positive" if long_stats["pnl"] >= 0 else "negative"
+            quality_rows += f"""
+            <tr style="background: #0d1f0d;">
+                <td style="padding-left: 24px; color: #26a69a;">&#x25B2; Long</td>
+                <td>{long_stats['trades']}</td>
+                <td>{long_stats['wins']}</td>
+                <td>{long_wr:.1f}%</td>
+                <td>{long_avg:+.2f}%</td>
+                <td class="{long_pnl_class}">${long_stats['pnl']:+,.0f}</td>
+            </tr>
+            """
+
+        short_stats = stats["short"]
+        if short_stats["trades"] > 0:
+            short_wr = short_stats["wins"] / short_stats["trades"] * 100
+            short_avg = sum(short_stats["avg_pnl_pct"]) / len(short_stats["avg_pnl_pct"]) if short_stats["avg_pnl_pct"] else 0
+            short_pnl_class = "positive" if short_stats["pnl"] >= 0 else "negative"
+            quality_rows += f"""
+            <tr style="background: #1f0d0d;">
+                <td style="padding-left: 24px; color: #ef5350;">&#x25BC; Short</td>
+                <td>{short_stats['trades']}</td>
+                <td>{short_stats['wins']}</td>
+                <td>{short_wr:.1f}%</td>
+                <td>{short_avg:+.2f}%</td>
                 <td class="{short_pnl_class}">${short_stats['pnl']:+,.0f}</td>
             </tr>
             """
@@ -1507,9 +1560,17 @@ def generate_html_report(
                 <div class="legend-color" style="background: #9c27b0;"></div>
                 <span>C15 ({signal_counts.get('15m', 0)})</span>
             </div>
-            <div class="legend-item" data-series="vwap_breach" onclick="toggleSeries('vwap_breach')">
+            <div class="legend-item" data-series="breach" onclick="toggleSeries('breach')">
                 <div class="legend-color" style="background: #00bcd4;"></div>
-                <span>B ({signal_counts.get('vwap', 0)})</span>
+                <span>B ({signal_counts.get('breach', 0)})</span>
+            </div>
+            <div class="legend-item" data-series="bounce" onclick="toggleSeries('bounce')">
+                <div class="legend-color" style="background: #4caf50;"></div>
+                <span>V ({signal_counts.get('bounce', 0)})</span>
+            </div>
+            <div class="legend-item" data-series="news_event" onclick="toggleSeries('news_event')">
+                <div class="legend-color" style="background: #ffc107;"></div>
+                <span>NE ({signal_counts.get('news_event', 0)})</span>
             </div>
             <div class="legend-item" data-series="vwap" onclick="toggleSeries('vwap')">
                 <div class="legend-color" style="background: linear-gradient(to bottom, #FFFFFF 40%, #8c8c8c 60%); border: 1px solid #666;"></div>
@@ -1532,6 +1593,7 @@ def generate_html_report(
             {'<button class="tab" onclick="switchTab(\'yearly\')">By Year</button>' if show_yearly_tab else ''}
             <button class="tab" onclick="switchTab('direction')">By Direction</button>
             <button class="tab" onclick="switchTab('strategy')">By Strategy</button>
+            <button class="tab" onclick="switchTab('quality')">By Quality</button>
             <button class="tab" onclick="switchTab('timeofday')">By Time of Day</button>
             <button class="tab" onclick="switchTab('dayofweek')">By Day of Week</button>
             <button class="tab" onclick="switchTab('details')">Details</button>
@@ -1550,6 +1612,7 @@ def generate_html_report(
                         <th>P&L %</th>
                         <th>P&L $</th>
                         <th>Balance</th>
+                        <th>Quality</th>
                         <th>Entry Reason</th>
                         <th>Exit Reason</th>
                     </tr>
@@ -1648,8 +1711,6 @@ def generate_html_report(
                         <th>Wins</th>
                         <th>Win Rate</th>
                         <th>Avg P/L</th>
-                        <th>Best P/L</th>
-                        <th>Worst P/L</th>
                         <th>Total P&L</th>
                     </tr>
                 </thead>
@@ -1667,13 +1728,28 @@ def generate_html_report(
                         <th>Wins</th>
                         <th>Win Rate</th>
                         <th>Avg P/L</th>
-                        <th>Best P/L</th>
-                        <th>Worst P/L</th>
                         <th>Total P&L</th>
                     </tr>
                 </thead>
                 <tbody>
                     {strategy_rows}
+                </tbody>
+            </table>
+        </div>
+        <div id="quality-tab" class="tab-content">
+            <table class="trades-table">
+                <thead>
+                    <tr>
+                        <th>Quality</th>
+                        <th>Trades</th>
+                        <th>Wins</th>
+                        <th>Win Rate</th>
+                        <th>Avg P/L</th>
+                        <th>Total P&L</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {quality_rows}
                 </tbody>
             </table>
         </div>
@@ -1686,8 +1762,6 @@ def generate_html_report(
                         <th>Wins</th>
                         <th>Win Rate</th>
                         <th>Avg P/L</th>
-                        <th>Best P/L</th>
-                        <th>Worst P/L</th>
                         <th>Total P&L</th>
                     </tr>
                 </thead>
@@ -1705,8 +1779,6 @@ def generate_html_report(
                         <th>Wins</th>
                         <th>Win Rate</th>
                         <th>Avg P/L</th>
-                        <th>Best P/L</th>
-                        <th>Worst P/L</th>
                         <th>Total P&L</th>
                     </tr>
                 </thead>
@@ -1776,7 +1848,9 @@ def generate_html_report(
         const signals1m = {json.dumps(signals_json.get('1m', []))};
         const signals5m = {json.dumps(signals_json.get('5m', []))};
         const signals15m = {json.dumps(signals_json.get('15m', []))};
-        const signalsVwap = {json.dumps(signals_json.get('vwap', []))};
+        const signalsBreach = {json.dumps(signals_json.get('breach', []))};
+        const signalsBounce = {json.dumps(signals_json.get('bounce', []))};
+        const signalsNewsEvent = {json.dumps(signals_json.get('news_event', []))};
 
         // Track series visibility - MUST be defined before chart creation
         // Signals hidden by default, trades and VWAP visible
@@ -1785,7 +1859,9 @@ def generate_html_report(
             '1m': false,
             '5m': false,
             '15m': false,
-            vwap_breach: false,
+            breach: false,
+            bounce: false,
+            news_event: false,
             vwap: true,  // Controls both VWAP line and bands
         }};
 
@@ -1975,8 +2051,16 @@ def generate_html_report(
                 allMarkers.push(...aggregateSignals(signals15m, '#9c27b0', candleDuration));
             }}
 
-            if (seriesState['vwap_breach']) {{
-                allMarkers.push(...aggregateSignals(signalsVwap, '#00bcd4', candleDuration));
+            if (seriesState['breach']) {{
+                allMarkers.push(...aggregateSignals(signalsBreach, '#00bcd4', candleDuration));
+            }}
+
+            if (seriesState['bounce']) {{
+                allMarkers.push(...aggregateSignals(signalsBounce, '#4caf50', candleDuration));
+            }}
+
+            if (seriesState['news_event']) {{
+                allMarkers.push(...aggregateSignals(signalsNewsEvent, '#ffc107', candleDuration));
             }}
 
             // Sort by time and set markers
@@ -2601,7 +2685,7 @@ def generate_html_report(
             }});
 
             // Set initial disabled state on legend items
-            ['1m', '5m', '15m', 'vwap_breach'].forEach(s => {{
+            ['1m', '5m', '15m', 'breach'].forEach(s => {{
                 const item = document.querySelector(`[data-series="${{s}}"]`);
                 if (item) item.classList.add('disabled');
             }});

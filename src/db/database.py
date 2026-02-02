@@ -23,6 +23,7 @@ from src.db.models import (
     DatasetDependency,
     DatasetDefaults,
     MarketCalendar,
+    LivePositionState,
     generate_uuid,
 )
 
@@ -839,6 +840,118 @@ class Database:
             current += timedelta(days=1)
 
         return all_dates
+
+    # =========================================================================
+    # Live Position State Operations
+    # =========================================================================
+
+    def get_position_state(self, session_id: str = "default") -> Optional[LivePositionState]:
+        """
+        Get live position state for a trading session.
+
+        Args:
+            session_id: Session identifier (default: "default")
+
+        Returns:
+            LivePositionState or None if not found.
+        """
+        with self.session() as session:
+            state = (
+                session.query(LivePositionState)
+                .filter(LivePositionState.session_id == session_id)
+                .first()
+            )
+            if state:
+                session.expunge(state)
+            return state
+
+    def save_position_state(
+        self,
+        session_id: str = "default",
+        **kwargs,
+    ) -> LivePositionState:
+        """
+        Save or update live position state.
+
+        Args:
+            session_id: Session identifier
+            **kwargs: Position state fields to update
+
+        Returns:
+            Updated LivePositionState.
+        """
+        with self.session() as session:
+            state = (
+                session.query(LivePositionState)
+                .filter(LivePositionState.session_id == session_id)
+                .first()
+            )
+
+            if state is None:
+                state = LivePositionState(session_id=session_id)
+                session.add(state)
+
+            # Update all provided fields
+            allowed_fields = {
+                "has_active_position", "position_id", "position_type",
+                "entry_time", "entry_option_price", "option_symbol",
+                "strike", "num_contracts", "entry_underlying_price",
+                "position_value", "dominant_model", "max_hold_minutes",
+                "barrier_start_time", "confluence_count", "peak_pnl_pct",
+                "breakeven_activated", "is_runner", "runner_start_time",
+                "runner_max_hold_minutes", "runner_peak_pnl_pct",
+                "runner_entry_pnl_pct", "is_breach", "is_reversal", "is_bounce", "renewals",
+                "daily_trades", "daily_pnl", "capital", "last_trade_date",
+                "completed_trades_json",
+            }
+
+            for key, value in kwargs.items():
+                if key in allowed_fields:
+                    setattr(state, key, value)
+
+            state.updated_at = datetime.utcnow()
+            session.flush()
+            session.expunge(state)
+            return state
+
+    def clear_active_position(self, session_id: str = "default") -> None:
+        """
+        Clear the active position (set has_active_position to False).
+
+        Args:
+            session_id: Session identifier
+        """
+        with self.session() as session:
+            state = (
+                session.query(LivePositionState)
+                .filter(LivePositionState.session_id == session_id)
+                .first()
+            )
+            if state:
+                state.has_active_position = False
+                state.position_id = None
+                state.updated_at = datetime.utcnow()
+
+    def delete_position_state(self, session_id: str = "default") -> bool:
+        """
+        Delete position state for a session.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            True if deleted, False if not found.
+        """
+        with self.session() as session:
+            state = (
+                session.query(LivePositionState)
+                .filter(LivePositionState.session_id == session_id)
+                .first()
+            )
+            if state:
+                session.delete(state)
+                return True
+            return False
 
 
 # Global database instance
